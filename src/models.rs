@@ -154,3 +154,11 @@ pub struct MouseMovementResponse {
     pub duration_ms: u64,
     pub position: Option<(i32, i32)>,
 }
+
+// Restart app request model
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestartAppRequest {
+    /// Delay in ms before restart (default 500, clamped to 100-5000)
+    pub delay_ms: Option<u64>,
+}
