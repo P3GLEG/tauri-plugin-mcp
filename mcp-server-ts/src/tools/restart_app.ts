@@ -47,7 +47,27 @@ export function registerRestartAppTool(server: McpServer) {
           );
         }
 
-        return createSuccessResponse('Application restarted and reconnected successfully.');
+        // After restart, the WebView may be blank (IPC reconnects but frontend hasn't loaded).
+        // Navigate to the app's root URL to ensure the frontend is rendered.
+        const appUrl = process.env.TAURI_DEV_URL || 'http://localhost:1420/';
+        console.error(`Navigating WebView to ${appUrl} to reload frontend...`);
+        try {
+          await socketClient.sendCommand('navigate_webview', {
+            action: 'navigate',
+            window_label: 'main',
+            url: appUrl,
+          });
+          // Give the page time to load before the final health check
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          await socketClient.sendCommand('ping', { value: 'post-navigate-health-check' });
+        } catch (navError) {
+          return createErrorResponse(
+            `Reconnected after restart but failed to reload the WebView: ${(navError as Error).message}. ` +
+            `Try manually: navigate goto ${appUrl}`
+          );
+        }
+
+        return createSuccessResponse('Application restarted, reconnected, and WebView reloaded successfully.');
       } catch (error) {
         const message = (error as Error).message;
         if (message.includes('connect') || message.includes('ECONNREFUSED') || message.includes('ENOENT')) {
