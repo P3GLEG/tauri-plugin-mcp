@@ -58,8 +58,14 @@ pub async fn emit_and_wait<R: Runtime>(
 
     // Await the correlated response with timeout
     match tokio::time::timeout(timeout, rx).await {
-        Ok(Ok(payload)) => Ok(payload),
+        Ok(Ok(payload)) => {
+            // once() auto-unlistens after firing, but we must also unlisten
+            // explicitly to prevent the EventId Drop impl from double-unlistening
+            app.unlisten(listener_id);
+            Ok(payload)
+        }
         Ok(Err(_)) => {
+            app.unlisten(listener_id);
             // Sender dropped without sending (listener was cleaned up)
             Err(crate::error::Error::Anyhow(format!(
                 "Listener dropped before {} response received",
