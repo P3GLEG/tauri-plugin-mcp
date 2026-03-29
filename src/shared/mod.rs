@@ -142,4 +142,5 @@ pub mod commands {
     pub const MANAGE_ZOOM: &str = "manage_zoom";
     pub const MANAGE_WEBVIEW_STATE: &str = "manage_webview_state";
     pub const TYPE_INTO_FOCUSED: &str = "type_into_focused";
+    pub const RESTART_APP: &str = "restart_app";
 }

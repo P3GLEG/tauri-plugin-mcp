@@ -9,6 +9,7 @@ import { registerExecuteJsTool } from "./execute_js.js";
 import { registerManageStorageTool } from "./manage_storage.js";
 import { registerManageWindowTool } from "./manage_window.js";
 import { registerWaitForTool } from "./wait_for.js";
+import { registerRestartAppTool } from "./restart_app.js";
 import { socketClient } from "./client.js";
 
 // Re-export the socket client for direct use
@@ -26,6 +27,7 @@ export function registerAllTools(server: McpServer) {
   registerManageStorageTool(server);
   registerManageWindowTool(server);
   registerWaitForTool(server);
+  registerRestartAppTool(server);
 }
 
 // Function to initialize socket connection (can be awaited before registering tools)

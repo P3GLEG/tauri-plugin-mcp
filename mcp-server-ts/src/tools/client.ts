@@ -34,6 +34,7 @@ export class TauriSocketClient {
   private buffer = '';
   private reconnectAttempts = 0;
   private authToken: string | undefined;
+  private suppressAutoReconnect = false;
 
   constructor(config?: ConnectionConfig) {
     // Default to IPC with default path
@@ -141,7 +142,13 @@ export class TauriSocketClient {
       this.client!.on('close', () => {
         this.isConnected = false;
         console.error('Socket connection closed');
-        
+
+        // Skip auto-reconnect if a managed reconnection (e.g. restart) is in progress
+        if (this.suppressAutoReconnect) {
+          console.error('Auto-reconnect suppressed (managed reconnection in progress)');
+          return;
+        }
+
         // Try to reconnect if not too many attempts
         if (this.reconnectAttempts < 3) {
           this.reconnectAttempts++;
@@ -292,6 +299,50 @@ export class TauriSocketClient {
         }
       }, 30000);
     });
+  }
+
+  /**
+   * Disconnects the current socket and polls for reconnection.
+   * Used after intentional operations that kill the server (e.g. restart).
+   * Suppresses the automatic reconnect handler to avoid races.
+   */
+  async waitForReconnect(maxAttempts: number = 15, delayMs: number = 2000): Promise<void> {
+    // Suppress the auto-reconnect handler
+    this.suppressAutoReconnect = true;
+
+    // Reject all pending callbacks — the server is going away
+    for (const [id, callback] of this.responseCallbacks.entries()) {
+      callback.reject(new Error('Connection closed for restart'));
+      this.responseCallbacks.delete(id);
+    }
+
+    // Tear down current socket
+    if (this.client) {
+      this.client.removeAllListeners();
+      this.client.destroy();
+      this.client = null;
+    }
+    this.isConnected = false;
+    this.buffer = '';
+
+    // Poll for reconnection
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      console.error(`Reconnect attempt ${attempt}/${maxAttempts}...`);
+      try {
+        this.reconnectAttempts = 0;
+        await this.connect();
+        console.error('Reconnected successfully after restart');
+        this.suppressAutoReconnect = false;
+        return;
+      } catch (e) {
+        console.error(`Reconnect attempt ${attempt} failed: ${(e as Error).message}`);
+      }
+    }
+
+    // All attempts exhausted
+    this.suppressAutoReconnect = false;
+    throw new Error(`Failed to reconnect after ${maxAttempts} attempts (${maxAttempts * delayMs / 1000}s)`);
   }
 }
 

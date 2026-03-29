@@ -23,6 +23,7 @@ pub mod webview;
 pub mod webview_state;
 pub mod window_manager;
 pub mod zoom;
+pub mod restart_app;
 
 // Re-export command handler functions
 pub use app_info::handle_get_app_info;
@@ -46,6 +47,7 @@ pub use webview::{
 pub use webview_state::handle_manage_webview_state;
 pub use window_manager::handle_manage_window;
 pub use zoom::handle_manage_zoom;
+pub use restart_app::handle_restart_app;
 
 /// Handle command routing for socket requests
 pub async fn handle_command<R: Runtime>(
@@ -95,6 +97,7 @@ pub async fn handle_command<R: Runtime>(
         commands::MANAGE_ZOOM => handle_manage_zoom(app, payload).await,
         commands::MANAGE_WEBVIEW_STATE => handle_manage_webview_state(app, payload).await,
         commands::TYPE_INTO_FOCUSED => handle_type_into_focused(app, payload).await,
+        commands::RESTART_APP => handle_restart_app(app, payload).await,
         _ => Ok(SocketResponse {
             success: false,
             data: None,
@@ -177,6 +180,7 @@ mod tests {
             commands::MANAGE_ZOOM,
             commands::MANAGE_WEBVIEW_STATE,
             commands::TYPE_INTO_FOCUSED,
+            commands::RESTART_APP,
         ];
 
         let mut seen = std::collections::HashSet::new();
@@ -187,6 +191,6 @@ mod tests {
                 cmd
             );
         }
-        assert_eq!(seen.len(), 25, "Expected 25 unique commands");
+        assert_eq!(seen.len(), 26, "Expected 26 unique commands");
     }
 }
