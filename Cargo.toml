@@ -10,7 +10,7 @@ links = "tauri-plugin-mcp"
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
-image = "0.25"
+image = { version = "0.25", features = ["jpeg", "png"] }
 interprocess = { version = "2.2.3", features = ["tokio"] }
 log = "0.4"
 serde = "1.0"
