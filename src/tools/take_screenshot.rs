@@ -13,10 +13,10 @@ use crate::socket_server::SocketResponse;
 
 /// Encode a DynamicImage to JPEG with the given quality (image 0.25 API).
 fn encode_jpeg(img: &DynamicImage, buf: &mut Vec<u8>, quality: u8) -> Result<()> {
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
     let encoder = JpegEncoder::new_with_quality(std::io::Cursor::new(buf), quality);
-    encoder.write_image(rgba.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+    encoder.write_image(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
         .map_err(|e| Error::WindowOperationFailed(format!("Failed to encode JPEG: {}", e)))
 }
 
