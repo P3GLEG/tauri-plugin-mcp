@@ -10,7 +10,7 @@ links = "tauri-plugin-mcp"
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
-image = "0.24.7"
+image = "0.25"
 interprocess = { version = "2.2.3", features = ["tokio"] }
 log = "0.4"
 serde = "1.0"
@@ -25,10 +25,10 @@ uuid = { version = "1", features = ["v4"] }
 core-foundation = "0.9"
 core-graphics = "0.22.3"
 foreign-types-shared = "0.1"
-xcap = "0.0.4"
+xcap = "0.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-xcap = "0.0.4"
+xcap = "0.9"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 win-screenshot = "4.0.5"

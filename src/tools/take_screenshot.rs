@@ -2,12 +2,23 @@ use crate::error::{Error, Result};
 use crate::shared::ScreenshotParams;
 use base64::Engine;
 use image::DynamicImage;
+use image::codecs::jpeg::JpegEncoder;
+use image::ImageEncoder;
 use serde_json::Value;
 use tauri::{AppHandle, Runtime};
 use log::info;
 use crate::TauriMcpExt;
 use crate::models::ScreenshotRequest;
 use crate::socket_server::SocketResponse;
+
+/// Encode a DynamicImage to JPEG with the given quality (image 0.25 API).
+fn encode_jpeg(img: &DynamicImage, buf: &mut Vec<u8>, quality: u8) -> Result<()> {
+    let rgba = img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    let encoder = JpegEncoder::new_with_quality(std::io::Cursor::new(buf), quality);
+    encoder.write_image(rgba.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+        .map_err(|e| Error::WindowOperationFailed(format!("Failed to encode JPEG: {}", e)))
+}
 
 /// Resize and compress a DynamicImage to JPEG bytes based on params.
 /// Returns (jpeg_bytes, final_width, final_height).
@@ -49,10 +60,7 @@ pub fn process_image_to_bytes(
     let mut current_quality = quality;
 
     // Try encoding with JPEG
-    dynamic_image.write_to(
-        &mut std::io::Cursor::new(&mut output_data),
-        image::ImageOutputFormat::Jpeg(current_quality),
-    ).map_err(|e| Error::WindowOperationFailed(format!("Failed to encode JPEG: {}", e)))?;
+    encode_jpeg(&dynamic_image, &mut output_data, current_quality)?;
 
     // Reduce quality if needed to meet max size
     while output_data.len() as u64 > max_size_bytes && current_quality > 30 {
@@ -64,10 +72,7 @@ pub fn process_image_to_bytes(
         );
         current_quality -= 10;
         output_data.clear();
-        dynamic_image.write_to(
-            &mut std::io::Cursor::new(&mut output_data),
-            image::ImageOutputFormat::Jpeg(current_quality),
-        ).map_err(|e| Error::WindowOperationFailed(format!("Failed to re-encode JPEG: {}", e)))?;
+        encode_jpeg(&dynamic_image, &mut output_data, current_quality)?;
     }
 
     // If still too large, resize the image
@@ -85,10 +90,7 @@ pub fn process_image_to_bytes(
                 image::imageops::FilterType::Triangle,
             );
             output_data.clear();
-            dynamic_image.write_to(
-                &mut std::io::Cursor::new(&mut output_data),
-                image::ImageOutputFormat::Jpeg(current_quality),
-            ).map_err(|e| Error::WindowOperationFailed(format!("Failed to encode resized image: {}", e)))?;
+            encode_jpeg(&dynamic_image, &mut output_data, current_quality)?;
 
             if dynamic_image.width() <= 800 {
                 break;
