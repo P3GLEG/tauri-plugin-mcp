@@ -206,8 +206,25 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
     // Register virtual cursor state for native input injection
     app.manage(crate::native_input::state::VirtualCursorState::new());
 
+    // Socket-per-app: when caller supplies an application_name and no explicit
+    // socket path, derive `/tmp/tauri-mcp-<app>.sock` so that two Tauri apps
+    // built with this plugin can run `pnpm tauri dev` simultaneously without
+    // colliding on the historical default `/tmp/tauri-mcp.sock`.
+    // Behaviour matrix:
+    //   path = Some(p)                -> use p (unchanged, full retrocompat)
+    //   path = None, app_name empty   -> /tmp/tauri-mcp.sock (unchanged)
+    //   path = None, app_name set     -> /tmp/tauri-mcp-<app>.sock  (NEW)
+    let resolved_socket_type = match &config.socket_type {
+        crate::SocketType::Ipc { path: None } if !config.application_name.is_empty() => {
+            let derived = std::env::temp_dir()
+                .join(format!("tauri-mcp-{}.sock", config.application_name));
+            crate::SocketType::Ipc { path: Some(derived) }
+        }
+        other => other.clone(),
+    };
+
     let socket_server = if config.start_socket_server {
-        let mut server = SocketServer::new(app.clone(), config.socket_type.clone(), config.auth_token.clone());
+        let mut server = SocketServer::new(app.clone(), resolved_socket_type, config.auth_token.clone());
         server.start()?;
         Some(Arc::new(Mutex::new(server)))
     } else {

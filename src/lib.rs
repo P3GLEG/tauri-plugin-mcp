@@ -152,6 +152,13 @@ pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
                     "[TAURI_MCP] Socket server will use custom IPC path: {}",
                     path.display()
                 );
+            } else if !config.application_name.is_empty() {
+                let derived_path = std::env::temp_dir()
+                    .join(format!("tauri-mcp-{}.sock", config.application_name));
+                info!(
+                    "[TAURI_MCP] Socket server will use app-derived IPC path: {}",
+                    derived_path.display()
+                );
             } else {
                 let default_path = std::env::temp_dir().join("tauri-mcp.sock");
                 info!(
