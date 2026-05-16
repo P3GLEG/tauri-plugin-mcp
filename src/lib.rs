@@ -1,8 +1,8 @@
+use log::{info, warn};
 use tauri::{
     Manager, Runtime,
     plugin::{Builder, TauriPlugin},
 };
-use log::{info, warn};
 
 pub use models::*;
 
@@ -10,6 +10,7 @@ pub use models::*;
 mod desktop;
 
 mod error;
+pub mod log_buffer;
 mod models;
 pub mod shared;
 mod socket_server;
@@ -21,9 +22,7 @@ mod platform;
 mod native_input;
 
 pub use error::{Error, Result};
-pub use shared::{
-    ScreenshotParams, ScreenshotResult, WindowManagerParams, WindowManagerResult,
-};
+pub use shared::{ScreenshotParams, ScreenshotResult, WindowManagerParams, WindowManagerResult};
 
 #[cfg(desktop)]
 use desktop::TauriMcp;
@@ -81,6 +80,12 @@ pub struct PluginConfig {
     /// Optional auth token for socket server authentication.
     /// When set, clients must include this token in requests.
     pub auth_token: Option<String>,
+    /// If true, install the ring-buffer adapter as the global `log` logger
+    /// so Rust-side `log!()` output is captured for `query_logs`. Off by
+    /// default because most apps already install a logger (e.g.
+    /// `tauri-plugin-log`) and `log` only allows one. JS console.* logs
+    /// are always captured regardless of this flag.
+    pub capture_rust_logs: bool,
 }
 
 impl PluginConfig {
@@ -92,7 +97,17 @@ impl PluginConfig {
             start_socket_server: true,
             default_webview_label: None,
             auth_token: None,
+            capture_rust_logs: false,
         }
+    }
+
+    /// Enable capture of Rust-side `log!()` output into the MCP ring buffer.
+    /// Only enable this if you have *not* installed another global logger
+    /// (e.g. `tauri-plugin-log`) — `log` only permits a single global
+    /// logger. JS console capture is unaffected by this setting.
+    pub fn capture_rust_logs(mut self, enable: bool) -> Self {
+        self.capture_rust_logs = enable;
+        self
     }
 
     /// Set the socket path for IPC mode.
@@ -161,10 +176,7 @@ pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
             }
         }
         SocketType::Tcp { host, port } => {
-            info!(
-                "[TAURI_MCP] Socket server will use TCP: {}:{}",
-                host, port
-            );
+            info!("[TAURI_MCP] Socket server will use TCP: {}:{}", host, port);
         }
     }
 
@@ -178,10 +190,14 @@ pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
         info!("[TAURI_MCP] Socket server auto-start is disabled");
     }
 
-    Builder::new("tauri-mcp")
-        .invoke_handler(tauri::generate_handler![
-        // Server Commands
-        ])
+    if config.capture_rust_logs {
+        // Opt-in: install the ring-buffer logger. Will fail (and no-op
+        // with a warning) if another logger is already installed.
+        log_buffer::install_logger();
+    }
+
+    Builder::new("mcp")
+        .invoke_handler(tauri::generate_handler![tools::push_log::push_log])
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 let _ = webview.eval(include_str!("listener_patch.js"));

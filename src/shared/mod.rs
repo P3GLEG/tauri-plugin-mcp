@@ -143,4 +143,6 @@ pub mod commands {
     pub const MANAGE_WEBVIEW_STATE: &str = "manage_webview_state";
     pub const TYPE_INTO_FOCUSED: &str = "type_into_focused";
     pub const RESTART_APP: &str = "restart_app";
+    pub const QUERY_LOGS: &str = "query_logs";
+    pub const LOG_MARK: &str = "log_mark";
 }

@@ -1,6 +1,6 @@
+use log::{debug, info};
 use serde_json::Value;
 use tauri::{AppHandle, Runtime};
-use log::{info, debug};
 
 use crate::shared::commands;
 use crate::socket_server::SocketResponse;
@@ -16,14 +16,17 @@ pub mod list_windows;
 pub mod local_storage;
 pub mod mouse_movement;
 pub mod navigate_webview;
+pub mod log_mark;
 pub mod ping;
+pub mod push_log;
+pub mod query_logs;
+pub mod restart_app;
 pub mod take_screenshot;
 pub mod text_input;
 pub mod webview;
 pub mod webview_state;
 pub mod window_manager;
 pub mod zoom;
-pub mod restart_app;
 
 // Re-export command handler functions
 pub use app_info::handle_get_app_info;
@@ -36,18 +39,20 @@ pub use list_windows::handle_list_windows;
 pub use local_storage::handle_get_local_storage;
 pub use mouse_movement::handle_simulate_mouse_movement;
 pub use navigate_webview::handle_navigate_webview;
+pub use log_mark::handle_log_mark;
 pub use ping::handle_ping;
+pub use query_logs::handle_query_logs;
+pub use restart_app::handle_restart_app;
 pub use take_screenshot::handle_take_screenshot;
 pub use text_input::handle_simulate_text_input;
 pub use webview::{
-    handle_get_dom, handle_get_element_position, handle_get_page_map, handle_send_text_to_element,
-    handle_get_page_state, handle_navigate_back, handle_scroll_page, handle_fill_form, handle_wait_for,
-    handle_type_into_focused,
+    handle_fill_form, handle_get_dom, handle_get_element_position, handle_get_page_map,
+    handle_get_page_state, handle_navigate_back, handle_scroll_page, handle_send_text_to_element,
+    handle_type_into_focused, handle_wait_for,
 };
 pub use webview_state::handle_manage_webview_state;
 pub use window_manager::handle_manage_window;
 pub use zoom::handle_manage_zoom;
-pub use restart_app::handle_restart_app;
 
 /// Handle command routing for socket requests
 pub async fn handle_command<R: Runtime>(
@@ -98,6 +103,8 @@ pub async fn handle_command<R: Runtime>(
         commands::MANAGE_WEBVIEW_STATE => handle_manage_webview_state(app, payload).await,
         commands::TYPE_INTO_FOCUSED => handle_type_into_focused(app, payload).await,
         commands::RESTART_APP => handle_restart_app(app, payload).await,
+        commands::QUERY_LOGS => handle_query_logs(app, payload).await,
+        commands::LOG_MARK => handle_log_mark(app, payload).await,
         _ => Ok(SocketResponse {
             success: false,
             data: None,
@@ -139,10 +146,7 @@ pub async fn handle_command<R: Runtime>(
             info!("[TAURI_MCP] Error: {}", err);
         }
     } else if let Err(ref e) = result {
-        info!(
-            "[TAURI_MCP] Command {} failed with error: {}",
-            command, e
-        );
+        info!("[TAURI_MCP] Command {} failed with error: {}", command, e);
     }
 
     result
@@ -181,16 +185,14 @@ mod tests {
             commands::MANAGE_WEBVIEW_STATE,
             commands::TYPE_INTO_FOCUSED,
             commands::RESTART_APP,
+            commands::QUERY_LOGS,
+            commands::LOG_MARK,
         ];
 
         let mut seen = std::collections::HashSet::new();
         for cmd in &all_commands {
-            assert!(
-                seen.insert(*cmd),
-                "Duplicate command constant: {}",
-                cmd
-            );
+            assert!(seen.insert(*cmd), "Duplicate command constant: {}", cmd);
         }
-        assert_eq!(seen.len(), 26, "Expected 26 unique commands");
+        assert_eq!(seen.len(), 28, "Expected 28 unique commands");
     }
 }

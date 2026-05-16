@@ -293,7 +293,26 @@
     },
     "PermissionKind": {
       "type": "string",
-      "oneOf": []
+      "oneOf": [
+        {
+          "description": "Enables the push_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-push-log",
+          "markdownDescription": "Enables the push_log command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the push_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-push-log",
+          "markdownDescription": "Denies the push_log command without any pre-configured scope."
+        },
+        {
+          "description": "Allows the webview to forward console.* logs to the plugin's ring buffer.\n#### This default permission set includes:\n\n- `allow-push-log`",
+          "type": "string",
+          "const": "default",
+          "markdownDescription": "Allows the webview to forward console.* logs to the plugin's ring buffer.\n#### This default permission set includes:\n\n- `allow-push-log`"
+        }
+      ]
     }
   }
 }

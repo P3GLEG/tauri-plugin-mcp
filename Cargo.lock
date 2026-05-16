@@ -3573,6 +3573,7 @@ dependencies = [
  "image",
  "interprocess",
  "log",
+ "parking_lot",
  "serde",
  "serde_json",
  "subtle",

@@ -5,11 +5,11 @@ use crate::shared::ScreenshotParams;
 use crate::socket_server::SocketServer;
 use crate::tools::mouse_movement;
 use crate::{PluginConfig, Result};
+use log::info;
 use serde::de::DeserializeOwned;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime, plugin::PluginApi};
-use log::info;
 
 // ----- Webview Fallback Config -----
 
@@ -76,7 +76,10 @@ impl<R: Runtime> WindowHandle<R> {
         }
     }
 
-    pub fn set_position(&self, pos: tauri::LogicalPosition<f64>) -> std::result::Result<(), tauri::Error> {
+    pub fn set_position(
+        &self,
+        pos: tauri::LogicalPosition<f64>,
+    ) -> std::result::Result<(), tauri::Error> {
         match self {
             WindowHandle::WebviewWindow(w) => w.set_position(pos),
             WindowHandle::Window(w) => w.set_position(pos),
@@ -130,7 +133,10 @@ pub fn get_window_handle<R: Runtime>(app: &AppHandle<R>, label: &str) -> Option<
 /// Supports both architectures:
 /// - WebviewWindow: returns the webview directly
 /// - Multi-webview: falls back to the configured `default_webview_label`
-pub fn get_webview_for_eval<R: Runtime>(app: &AppHandle<R>, label: &str) -> Option<tauri::Webview<R>> {
+pub fn get_webview_for_eval<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+) -> Option<tauri::Webview<R>> {
     // First try WebviewWindow with exact label (returns its inner webview)
     if let Some(ww) = app.get_webview_window(label) {
         return Some(ww.as_ref().clone());
@@ -206,8 +212,46 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
     // Register virtual cursor state for native input injection
     app.manage(crate::native_input::state::VirtualCursorState::new());
 
+    // Subscribe to `log://log` events emitted by tauri-plugin-log so we can
+    // capture Rust-side logs without owning the global `log` logger (which
+    // tauri-plugin-log already holds). Cheap and conflict-free: if no
+    // tauri-plugin-log is installed the listener simply receives nothing.
+    {
+        use tauri::Listener;
+        app.listen_any("log://log", |event| {
+            #[derive(serde::Deserialize)]
+            struct Payload {
+                message: String,
+                /// Numeric LogLevel from tauri-plugin-log: 1=Trace .. 5=Error.
+                level: u16,
+            }
+            if let Ok(p) = serde_json::from_str::<Payload>(event.payload()) {
+                let level = match p.level {
+                    1 => "trace",
+                    2 => "debug",
+                    3 => "info",
+                    4 => "warn",
+                    5 => "error",
+                    _ => "info",
+                };
+                // tauri-plugin-log prepends "[YYYY-MM-DD][LEVEL][target] " — leave
+                // it intact; it gives the LLM useful context (caller module, etc).
+                crate::log_buffer::global().push(
+                    level,
+                    crate::log_buffer::LogSource::Rust,
+                    None,
+                    p.message,
+                );
+            }
+        });
+    }
+
     let socket_server = if config.start_socket_server {
-        let mut server = SocketServer::new(app.clone(), config.socket_type.clone(), config.auth_token.clone());
+        let mut server = SocketServer::new(
+            app.clone(),
+            config.socket_type.clone(),
+            config.auth_token.clone(),
+        );
         server.start()?;
         Some(Arc::new(Mutex::new(server)))
     } else {
@@ -259,9 +303,7 @@ impl<R: Runtime> TauriMcp<R> {
         };
 
         // Create a context with the window handle for platform implementation
-        let window_context = ScreenshotContext {
-            window_handle,
-        };
+        let window_context = ScreenshotContext { window_handle };
 
         info!("[TAURI_MCP] Taking screenshot with default parameters");
 
@@ -435,4 +477,3 @@ impl<R: Runtime> Drop for TauriMcp<R> {
         }
     }
 }
-
