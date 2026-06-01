@@ -1401,16 +1401,42 @@ async function handleJsExecutionRequest(event: any) {
     }
 }
 
-// Function to safely execute JavaScript code
+// Function to safely execute JavaScript code.
+//
+// Two-level strategy, both built on *indirect* eval `(0, eval)(...)` so the
+// code runs in global scope (like the old `new Function` approach) but, unlike
+// `new Function`, the *completion value* of the last evaluated statement is
+// returned. This is what makes multi-statement snippets work:
+//   `const x = 1; const y = 2; x + y`  ->  3
+// whereas `new Function("return (" + code + ")")` chokes on the leading
+// `const` and the fallback `new Function(code)()` returns `undefined`.
+//
+// Level 1 wraps the code in parentheses first. This is required to make a bare
+// object literal evaluate as an expression rather than a block statement:
+//   `{ a: 1 }`        // block with a labelled statement -> completion `1`-ish, fragile
+//   `({ a: 1 })`      // object literal -> the object
+// If the parenthesized form is a syntax error (e.g. it contains statements such
+// as `const x = 1; ...`), we fall through to Level 2.
+//
+// Level 2 evaluates the raw code. The indirect-eval completion value gives the
+// value of the last statement, so `const x = 1; x + 1` yields 2, declarations
+// stay scoped to the eval, and an IIFE `(() => { ... })()` — already an
+// expression — returns its own value untouched (the level-1 double-wrap
+// `((() => {...})())` is also a harmless valid expression).
 function executeJavaScript(code: string): any {
-    // Using Function constructor is slightly safer than eval
-    // It runs in global scope rather than local scope
+    // Indirect eval via an alias: calling `eval` through a variable (rather than
+    // the syntactic `eval(...)` identifier) makes it an *indirect* eval, which
+    // evaluates in the global lexical scope (like the old `new Function`) AND
+    // returns the completion value of the last statement (unlike `new Function`).
+    const indirectEval = eval;
     try {
-        // For expressions, return the result
-        return new Function(`return (${code})`)();
+        // Level 1 — treat the snippet as a single expression (handles object
+        // literals and keeps simple expressions working).
+        return indirectEval(`(${code})`);
     } catch {
-        // If that fails, try executing as statements
-        return new Function(code)();
+        // Level 2 — evaluate as-is; completion value of the last statement is
+        // returned, so multi-statement snippets and declarations work.
+        return indirectEval(code);
     }
 }
 
