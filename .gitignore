@@ -6,7 +6,11 @@ Cargo.log
 # Tauri
 .tauri/
 mcp-server-ts/build/
-dist-js/
+# dist-js/ is intentionally COMMITTED: this fork is consumed by ori/iwe apps via
+# a pnpm `link:` path dependency. pnpm does NOT run lifecycle scripts (prepare)
+# for linked local packages, so the compiled guest-js artifact must already be
+# present in the tree — otherwise a fresh clone would leave a dead link with no
+# dist-js to resolve. Rebuild with `pnpm build` after editing guest-js/.
 # TypeScript/JavaScript
 node_modules/
 package-lock.json
