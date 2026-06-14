@@ -4,7 +4,8 @@ use image;
 use log::{debug, info, error};
 use tauri::Runtime;
 use core_graphics::display::{
-    CGWindowListCopyWindowInfo, kCGWindowListOptionAll, kCGWindowListExcludeDesktopElements,
+    CGWindowListCopyWindowInfo, kCGWindowListOptionAll, kCGWindowListOptionIncludingWindow,
+    kCGWindowListExcludeDesktopElements,
     kCGNullWindowID, CGWindowListCreateImage, CGRect, CGPoint, CGSize,
     kCGWindowImageDefault, kCGWindowImageBoundsIgnoreFraming,
 };
@@ -147,9 +148,14 @@ fn capture_window_by_id(window_id: u32, bounds: (f64, f64, f64, f64)) -> Result<
     };
 
     unsafe {
+        // kCGWindowListOptionIncludingWindow renders the backing store of *this*
+        // window_id specifically. kCGWindowListOptionAll would ignore window_id and
+        // composite every window intersecting `rect`, which captures whatever is in
+        // that screen region on the active Space when the target window lives on
+        // another Space.
         let image_ref = CGWindowListCreateImage(
             rect,
-            kCGWindowListOptionAll,
+            kCGWindowListOptionIncludingWindow,
             window_id,
             kCGWindowImageDefault | kCGWindowImageBoundsIgnoreFraming,
         );
