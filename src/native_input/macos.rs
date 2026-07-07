@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -55,6 +56,8 @@ unsafe extern "C" {
 
 // () return, 1 Id arg: [app sendEvent:event]
 type MsgSendVoidId = unsafe extern "C" fn(Id, Sel, Id);
+// () return, 1 BOOL arg: [app activateIgnoringOtherApps:YES]
+type MsgSendVoidBool = unsafe extern "C" fn(Id, Sel, i8);
 // Id return, no extra args: [cls alloc], [obj autorelease], [NSApp sharedApplication]
 type MsgSendId = unsafe extern "C" fn(Id, Sel) -> Id;
 // i64 return, no extra args: [window windowNumber]
@@ -74,12 +77,6 @@ type MsgSendRectRect = unsafe extern "C" fn(Id, Sel, NSRect) -> NSRect;
 type MsgSendStretRect = unsafe extern "C" fn(*mut NSRect, Id, Sel);
 #[cfg(target_arch = "x86_64")]
 type MsgSendStretRectRect = unsafe extern "C" fn(*mut NSRect, Id, Sel, NSRect);
-
-// mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:
-type MsgSendMouseEvent = unsafe extern "C" fn(
-    Class, Sel,
-    u64, NSPoint, u64, f64, i64, Id, i64, i64, f32,
-) -> Id;
 
 // keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:
 type MsgSendKeyEvent = unsafe extern "C" fn(
@@ -135,30 +132,10 @@ unsafe fn msg_send_rect_rect(obj: Id, sel: Sel, arg: NSRect) -> NSRect {
     }
 }
 
-// ---- NSEventType constants ----
+// ---- NSEventType constants (keyboard path only) ----
 
-const NS_LEFT_MOUSE_DOWN: u64 = 1;
-const NS_LEFT_MOUSE_UP: u64 = 2;
-const NS_RIGHT_MOUSE_DOWN: u64 = 3;
-const NS_RIGHT_MOUSE_UP: u64 = 4;
-const NS_MOUSE_MOVED: u64 = 5;
 const NS_KEY_DOWN: u64 = 10;
 const NS_KEY_UP: u64 = 11;
-const NS_OTHER_MOUSE_DOWN: u64 = 25;
-const NS_OTHER_MOUSE_UP: u64 = 26;
-
-/// Get the content rect height of an NSWindow for coordinate flipping.
-unsafe fn get_content_height(ns_window: Id) -> f64 {
-    unsafe {
-        let frame = msg_send_rect(ns_window, sel(b"frame\0"));
-        let content_rect = msg_send_rect_rect(
-            ns_window,
-            sel(b"contentRectForFrameRect:\0"),
-            frame,
-        );
-        content_rect.size.height
-    }
-}
 
 /// Get the window number for an NSWindow.
 unsafe fn get_window_number(ns_window: Id) -> i64 {
@@ -168,30 +145,117 @@ unsafe fn get_window_number(ns_window: Id) -> i64 {
     }
 }
 
-/// Create and send an NSEvent mouse event to [NSApp sendEvent:].
-unsafe fn send_mouse_event(
-    event_type: u64,
-    location: NSPoint,
-    window_number: i64,
-    click_count: i64,
-    pressure: f32,
-) {
+// ---- CoreGraphics FFI (window-server mouse injection) ----
+//
+// Mouse events are deliberately NOT delivered via [NSApp sendEvent:].
+// Synthetic sendEvent: calls bypass the real event queue; when the
+// coordinates land near a window resize edge, AppKit's mouse-hysteresis
+// check spins a NESTED run loop waiting for a follow-up event from the
+// real queue — which sendEvent: never feeds — deadlocking the main
+// thread (observed: ~18 min main-thread freeze, all samples in mach_msg).
+// Posting through CGEventPost(kCGHIDEventTap) hands the event to the
+// window server, so AppKit receives it through the genuine event queue
+// and nested run loops can complete.
+//
+// Note: posting to the HID event tap moves the real cursor and requires
+// the process to be trusted for Accessibility on hardened systems.
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGRect {
+    origin: CGPoint,
+    size: CGSize,
+}
+
+type CGEventRef = *mut c_void;
+
+const K_CG_HID_EVENT_TAP: u32 = 0;
+
+// CGEventType
+const CG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
+const CG_EVENT_LEFT_MOUSE_UP: u32 = 2;
+const CG_EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
+const CG_EVENT_RIGHT_MOUSE_UP: u32 = 4;
+const CG_EVENT_MOUSE_MOVED: u32 = 5;
+const CG_EVENT_LEFT_MOUSE_DRAGGED: u32 = 6;
+const CG_EVENT_RIGHT_MOUSE_DRAGGED: u32 = 7;
+const CG_EVENT_OTHER_MOUSE_DOWN: u32 = 25;
+const CG_EVENT_OTHER_MOUSE_UP: u32 = 26;
+const CG_EVENT_OTHER_MOUSE_DRAGGED: u32 = 27;
+
+// CGMouseButton
+const CG_MOUSE_BUTTON_LEFT: u32 = 0;
+const CG_MOUSE_BUTTON_RIGHT: u32 = 1;
+const CG_MOUSE_BUTTON_CENTER: u32 = 2;
+
+// CGEventField
+const K_CG_MOUSE_EVENT_CLICK_STATE: u32 = 1;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventCreateMouseEvent(
+        source: *const c_void,
+        event_type: u32,
+        position: CGPoint,
+        button: u32,
+    ) -> CGEventRef;
+    fn CGEventSetIntegerValueField(event: CGEventRef, field: u32, value: i64);
+    fn CGEventPost(tap: u32, event: CGEventRef);
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayBounds(display: u32) -> CGRect;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRelease(cf: *const c_void);
+}
+
+/// Which CG mouse button is currently held by a `mouse_down`-only call
+/// (-1 = none). Used so intermediate moves during a drag are posted as
+/// *Dragged events (real HID semantics) and so a `click`/`mouse_up`
+/// always clears the pressed state — a synthetic mouseDown is never
+/// left unpaired by the `click` path within a single dispatch.
+static PRESSED_CG_BUTTON: AtomicI32 = AtomicI32::new(-1);
+
+/// Keep injected coordinates this many points away from the window's
+/// content-rect edges so they can't land in AppKit's window-edge resize
+/// bands (the trigger for the hysteresis nested run loop).
+const RESIZE_EDGE_INSET: f64 = 8.0;
+
+fn clamp_inset(v: f64, max: f64, inset: f64) -> f64 {
+    if max <= inset * 2.0 {
+        return max / 2.0;
+    }
+    v.max(inset).min(max - inset)
+}
+
+/// Create + post one mouse event through the HID event tap, then release it.
+fn post_mouse_event(event_type: u32, position: CGPoint, button: u32, click_state: i64) {
     unsafe {
-        let send_id: MsgSendId = std::mem::transmute(objc_msgSend as *const c_void);
-        let ns_app = send_id(
-            class(b"NSApplication\0"),
-            sel(b"sharedApplication\0"),
-        );
-
-        let create: MsgSendMouseEvent = std::mem::transmute(objc_msgSend as *const c_void);
-        let event = create(
-            class(b"NSEvent\0"),
-            sel(b"mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:\0"),
-            event_type, location, 0u64, 0.0f64, window_number, NIL, 0i64, click_count, pressure,
-        );
-
-        let send_event: MsgSendVoidId = std::mem::transmute(objc_msgSend as *const c_void);
-        send_event(ns_app, sel(b"sendEvent:\0"), event);
+        let event = CGEventCreateMouseEvent(std::ptr::null(), event_type, position, button);
+        if event.is_null() {
+            debug!("[NATIVE_INPUT] CGEventCreateMouseEvent returned null (type={})", event_type);
+            return;
+        }
+        if click_state > 0 {
+            CGEventSetIntegerValueField(event, K_CG_MOUSE_EVENT_CLICK_STATE, click_state);
+        }
+        CGEventPost(K_CG_HID_EVENT_TAP, event);
+        CFRelease(event);
     }
 }
 
@@ -246,7 +310,26 @@ unsafe fn nsstring_from_str(s: &str) -> Id {
 
 // ---- Public API ----
 
-/// Inject mouse events into the webview's NSWindow via with_webview.
+/// Inject mouse events for the webview's NSWindow.
+///
+/// Two phases:
+/// 1. Main thread (inside with_webview): read window geometry only —
+///    no event dispatch — and convert the caller's window-relative CSS
+///    coordinates (top-left origin, logical points) into GLOBAL CG
+///    screen coordinates. Never runs a nested run loop, so it cannot
+///    deadlock.
+/// 2. Calling thread (a worker, NOT the main thread): post the events
+///    via CGEventPost(kCGHIDEventTap) so AppKit receives them through
+///    the real event queue while the main thread is free to pump it.
+///
+/// Coordinate conversion:
+///   CSS (x, y)                             top-left of content, y down
+///   -> AppKit screen point:  content.origin + (x, height - y)   y up,
+///      origin at bottom-left of the main display (contentRectForFrameRect:
+///      of [window frame] is already in AppKit global screen coords, so
+///      this is correct on any display of a multi-monitor setup)
+///   -> CG global point:      (x, mainDisplayHeight - y_appkit)  y down,
+///      origin at top-left of the main display — what CGEventPost expects.
 pub fn inject_mouse<R: Runtime>(
     webview: &Webview<R>,
     params: &MouseParams,
@@ -257,78 +340,124 @@ pub fn inject_mouse<R: Runtime>(
     let button = params.button;
     let mouse_down = params.mouse_down;
     let mouse_up = params.mouse_up;
+    let wants_button_event = click || mouse_down || mouse_up;
 
     let (tx, rx) = mpsc::channel();
 
     webview
         .with_webview(move |platform_wv| {
-            let result: Result<InputResult, String> = unsafe {
+            let result: Result<(f64, f64, CGPoint), String> = unsafe {
                 let ns_window: Id = platform_wv.ns_window();
                 if ns_window.is_null() {
-                    return tx
-                        .send(Err("NSWindow is nil".to_string()))
-                        .unwrap_or(());
+                    Err("NSWindow is nil".to_string())
+                } else {
+                    let frame = msg_send_rect(ns_window, sel(b"frame\0"));
+                    let content = msg_send_rect_rect(
+                        ns_window,
+                        sel(b"contentRectForFrameRect:\0"),
+                        frame,
+                    );
+
+                    // Clamp away from the window-edge resize bands so a
+                    // click can never engage AppKit's resize hysteresis.
+                    let css_x = clamp_inset(x as f64, content.size.width, RESIZE_EDGE_INSET);
+                    let css_y = clamp_inset(y as f64, content.size.height, RESIZE_EDGE_INSET);
+
+                    // CSS (top-left, window-relative) -> AppKit global screen (bottom-left, y up)
+                    let appkit_x = content.origin.x + css_x;
+                    let appkit_y = content.origin.y + (content.size.height - css_y);
+
+                    // AppKit global -> CG global (top-left of main display, y down)
+                    let main_height = CGDisplayBounds(CGMainDisplayID()).size.height;
+                    let global = CGPoint {
+                        x: appkit_x,
+                        y: main_height - appkit_y,
+                    };
+
+                    if wants_button_event {
+                        // HID-tap events route to whatever window is under the
+                        // cursor; bring ours to front so the click lands on it
+                        // (matches the old sendEvent: "always our window" behavior).
+                        let send_void_id: MsgSendVoidId =
+                            std::mem::transmute(objc_msgSend as *const c_void);
+                        send_void_id(ns_window, sel(b"makeKeyAndOrderFront:\0"), NIL);
+
+                        let send_id: MsgSendId =
+                            std::mem::transmute(objc_msgSend as *const c_void);
+                        let ns_app =
+                            send_id(class(b"NSApplication\0"), sel(b"sharedApplication\0"));
+                        let send_void_bool: MsgSendVoidBool =
+                            std::mem::transmute(objc_msgSend as *const c_void);
+                        send_void_bool(ns_app, sel(b"activateIgnoringOtherApps:\0"), 1);
+                    }
+
+                    debug!(
+                        "[NATIVE_INPUT] macOS mouse: css=({}, {}) clamped=({}, {}), appkit_global=({}, {}), cg_global=({}, {})",
+                        x, y, css_x, css_y, appkit_x, appkit_y, global.x, global.y
+                    );
+
+                    Ok((css_x, css_y, global))
                 }
-
-                let content_height = get_content_height(ns_window);
-                let window_number = get_window_number(ns_window);
-
-                // CSS coords (top-left origin) -> NSWindow coords (bottom-left origin)
-                let ns_point = NSPoint {
-                    x: x as f64,
-                    y: content_height - y as f64,
-                };
-
-                debug!(
-                    "[NATIVE_INPUT] macOS mouse: css=({}, {}), ns_point=({}, {}), content_height={}",
-                    x, y, ns_point.x, ns_point.y, content_height
-                );
-
-                // Send mouseMoved event
-                send_mouse_event(NS_MOUSE_MOVED, ns_point, window_number, 0, 0.0);
-
-                if click {
-                    let (down_type, up_type) = match button {
-                        MouseButton::Left => (NS_LEFT_MOUSE_DOWN, NS_LEFT_MOUSE_UP),
-                        MouseButton::Right => (NS_RIGHT_MOUSE_DOWN, NS_RIGHT_MOUSE_UP),
-                        MouseButton::Middle => (NS_OTHER_MOUSE_DOWN, NS_OTHER_MOUSE_UP),
-                    };
-
-                    send_mouse_event(down_type, ns_point, window_number, 1, 1.0);
-                    send_mouse_event(up_type, ns_point, window_number, 1, 0.0);
-                } else if mouse_down {
-                    let down_type = match button {
-                        MouseButton::Left => NS_LEFT_MOUSE_DOWN,
-                        MouseButton::Right => NS_RIGHT_MOUSE_DOWN,
-                        MouseButton::Middle => NS_OTHER_MOUSE_DOWN,
-                    };
-                    send_mouse_event(down_type, ns_point, window_number, 1, 1.0);
-                } else if mouse_up {
-                    let up_type = match button {
-                        MouseButton::Left => NS_LEFT_MOUSE_UP,
-                        MouseButton::Right => NS_RIGHT_MOUSE_UP,
-                        MouseButton::Middle => NS_OTHER_MOUSE_UP,
-                    };
-                    send_mouse_event(up_type, ns_point, window_number, 1, 0.0);
-                }
-
-                Ok(InputResult {
-                    success: true,
-                    position: (x, y),
-                    error: None,
-                })
             };
 
             tx.send(result).unwrap_or(());
         })
         .map_err(|e| Error::Anyhow(format!("with_webview failed: {}", e)))?;
 
-    let result = rx
+    let (css_x, css_y, global) = rx
         .recv_timeout(Duration::from_secs(5))
         .map_err(|e| Error::Anyhow(format!("with_webview timed out: {}", e)))?
-        .map_err(|e| Error::Anyhow(e))?;
+        .map_err(Error::Anyhow)?;
 
-    Ok(result)
+    let cg_button = match button {
+        MouseButton::Left => CG_MOUSE_BUTTON_LEFT,
+        MouseButton::Right => CG_MOUSE_BUTTON_RIGHT,
+        MouseButton::Middle => CG_MOUSE_BUTTON_CENTER,
+    };
+    let (down_type, up_type) = match button {
+        MouseButton::Left => (CG_EVENT_LEFT_MOUSE_DOWN, CG_EVENT_LEFT_MOUSE_UP),
+        MouseButton::Right => (CG_EVENT_RIGHT_MOUSE_DOWN, CG_EVENT_RIGHT_MOUSE_UP),
+        MouseButton::Middle => (CG_EVENT_OTHER_MOUSE_DOWN, CG_EVENT_OTHER_MOUSE_UP),
+    };
+
+    // Move to the target first. If a button is held from a previous
+    // mouse_down-only call, this is mid-drag: post a *Dragged event with
+    // the held button so drag semantics are preserved.
+    let held = PRESSED_CG_BUTTON.load(Ordering::SeqCst);
+    if held >= 0 {
+        let (drag_type, drag_button) = match held as u32 {
+            CG_MOUSE_BUTTON_RIGHT => (CG_EVENT_RIGHT_MOUSE_DRAGGED, CG_MOUSE_BUTTON_RIGHT),
+            CG_MOUSE_BUTTON_CENTER => (CG_EVENT_OTHER_MOUSE_DRAGGED, CG_MOUSE_BUTTON_CENTER),
+            _ => (CG_EVENT_LEFT_MOUSE_DRAGGED, CG_MOUSE_BUTTON_LEFT),
+        };
+        post_mouse_event(drag_type, global, drag_button, 0);
+    } else {
+        post_mouse_event(CG_EVENT_MOUSE_MOVED, global, cg_button, 0);
+    }
+
+    if click {
+        // Down and up are always paired within this single dispatch.
+        post_mouse_event(down_type, global, cg_button, 1);
+        std::thread::sleep(Duration::from_millis(20));
+        post_mouse_event(up_type, global, cg_button, 1);
+        PRESSED_CG_BUTTON.store(-1, Ordering::SeqCst);
+    } else if mouse_down {
+        // Down-only mode exists to support drags (down -> move -> up
+        // across separate calls). With window-server delivery this can
+        // no longer wedge a nested run loop, but callers MUST follow up
+        // with mouse_up; PRESSED_CG_BUTTON tracks the debt.
+        post_mouse_event(down_type, global, cg_button, 1);
+        PRESSED_CG_BUTTON.store(cg_button as i32, Ordering::SeqCst);
+    } else if mouse_up {
+        post_mouse_event(up_type, global, cg_button, 1);
+        PRESSED_CG_BUTTON.store(-1, Ordering::SeqCst);
+    }
+
+    Ok(InputResult {
+        success: true,
+        position: (css_x.round() as i32, css_y.round() as i32),
+        error: None,
+    })
 }
 
 /// Inject text as keyboard events into the webview's NSWindow via with_webview.
@@ -368,7 +497,7 @@ pub fn inject_text<R: Runtime>(
 
         rx.recv_timeout(Duration::from_secs(5))
             .map_err(|e| Error::Anyhow(format!("with_webview timed out: {}", e)))?
-            .map_err(|e| Error::Anyhow(e))?;
+            .map_err(Error::Anyhow)?;
     } else {
         // Slow path: character by character with delays
         for ch in &chars {
@@ -398,7 +527,7 @@ pub fn inject_text<R: Runtime>(
 
             rx.recv_timeout(Duration::from_secs(5))
                 .map_err(|e| Error::Anyhow(format!("with_webview timed out: {}", e)))?
-                .map_err(|e| Error::Anyhow(e))?;
+                .map_err(Error::Anyhow)?;
 
             std::thread::sleep(Duration::from_millis(params.delay_ms));
         }
