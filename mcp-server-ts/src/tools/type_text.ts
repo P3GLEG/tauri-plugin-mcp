@@ -45,7 +45,7 @@ export function registerTypeTextTool(server: McpServer) {
     {
       text: z.string().optional().describe("Text to type. Required unless using 'fields' mode."),
       // Selector-based targeting
-      selector_type: z.enum(["ref", "id", "class", "tag", "text"]).optional().describe("Selector type for targeting a specific element. 'ref' uses numbered reference from query_page map mode."),
+      selector_type: z.enum(["ref", "id", "class", "css", "tag", "text"]).optional().describe("Selector type for targeting a specific element. 'ref' uses numbered reference from query_page map mode. 'css' accepts any CSS selector."),
       selector_value: z.string().optional().describe("Selector value. For 'ref', provide the ref number as string."),
       // Form fill mode
       fields: z.array(z.object({

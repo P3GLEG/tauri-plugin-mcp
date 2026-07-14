@@ -76,6 +76,9 @@ export function registerRestartAppTool(server: McpServer) {
       openWorldHint: false,
     },
     async ({ delay_ms }) => {
+      // Honor the same env vars the socket client uses so the force-kill
+      // path targets the correct socket.
+      const isTcp = process.env.TAURI_MCP_CONNECTION_TYPE === 'tcp';
       const socketPath = process.env.TAURI_MCP_IPC_PATH || '/tmp/tauri-mcp.sock';
       let restartMethod = 'graceful';
 
@@ -94,6 +97,18 @@ export function registerRestartAppTool(server: McpServer) {
         } catch (gracefulError) {
           // Graceful restart failed — app is likely frozen. Force kill it.
           console.error(`Graceful restart failed: ${(gracefulError as Error).message}`);
+
+          if (isTcp) {
+            // Force-kill discovers the app PID via the Unix socket file, which
+            // doesn't exist for TCP connections. Nothing safe to kill.
+            return createErrorResponse(
+              'Graceful restart failed and the connection type is TCP, so the app process ' +
+              'cannot be located via the IPC socket for a force-kill. ' +
+              'Please kill and relaunch the app manually. ' +
+              `Original error: ${(gracefulError as Error).message}`
+            );
+          }
+
           console.error('App appears frozen. Attempting force kill...');
           restartMethod = 'force-kill';
 
@@ -129,27 +144,35 @@ export function registerRestartAppTool(server: McpServer) {
         }
 
         // After restart, the WebView may be blank (IPC reconnects but frontend hasn't loaded).
-        // Navigate to the app's root URL to ensure the frontend is rendered.
-        const appUrl = process.env.TAURI_DEV_URL || 'http://localhost:1420/';
-        console.error(`Navigating WebView to ${appUrl} to reload frontend...`);
-        try {
-          await socketClient.sendCommand('navigate_webview', {
-            action: 'navigate',
-            window_label: 'main',
-            url: appUrl,
-          });
-          // Give the page time to load before the final health check
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          await socketClient.sendCommand('ping', { value: 'post-navigate-health-check' });
-        } catch (navError) {
-          return createErrorResponse(
-            `Reconnected after restart but failed to reload the WebView: ${(navError as Error).message}. ` +
-            `Try manually: navigate goto ${appUrl}`
-          );
+        // If TAURI_DEV_URL is explicitly set, navigate to it to ensure the frontend is
+        // rendered. Otherwise skip navigation — we can't guess the app's URL — and rely
+        // on the ping health check above.
+        const appUrl = process.env.TAURI_DEV_URL;
+        let webviewInfo = '';
+        if (appUrl) {
+          console.error(`Navigating WebView to ${appUrl} to reload frontend...`);
+          try {
+            await socketClient.sendCommand('navigate_webview', {
+              action: 'navigate',
+              window_label: 'main',
+              url: appUrl,
+            });
+            // Give the page time to load before the final health check
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            await socketClient.sendCommand('ping', { value: 'post-navigate-health-check' });
+            webviewInfo = ', and WebView reloaded';
+          } catch (navError) {
+            return createErrorResponse(
+              `Reconnected after restart but failed to reload the WebView: ${(navError as Error).message}. ` +
+              `Try manually: navigate goto ${appUrl}`
+            );
+          }
+        } else {
+          console.error('TAURI_DEV_URL not set; skipping post-restart WebView navigation.');
         }
 
         const method = restartMethod === 'force-kill' ? ' (via force-kill)' : '';
-        return createSuccessResponse(`Application restarted${method}, reconnected, and WebView reloaded successfully.`);
+        return createSuccessResponse(`Application restarted${method} and reconnected successfully${webviewInfo}.`);
       } catch (error) {
         const message = (error as Error).message;
         if (message.includes('connect') || message.includes('ECONNREFUSED') || message.includes('ENOENT')) {

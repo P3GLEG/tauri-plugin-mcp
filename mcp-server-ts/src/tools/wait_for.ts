@@ -13,7 +13,7 @@ export function registerWaitForTool(server: McpServer) {
       selector: z.string().optional().describe("CSS selector for the element to wait for."),
       ref: z.number().int().optional().describe("Ref number (from get_page_map) of the element to wait for."),
       state: z.enum(["visible", "hidden", "attached", "detached"]).default("visible").describe("Condition to wait for. 'visible': element exists and is visible. 'hidden': element is hidden or text is absent. 'attached': element exists in DOM. 'detached': element removed from DOM."),
-      timeout_ms: z.number().int().positive().default(10000).describe("Maximum time to wait in milliseconds. Default: 10000 (10 seconds)."),
+      timeout_ms: z.number().int().positive().max(300000).default(10000).describe("Maximum time to wait in milliseconds. Default: 10000 (10 seconds). Max: 300000 (5 minutes)."),
     },
     {
       title: "Wait For Condition",
@@ -31,7 +31,9 @@ export function registerWaitForTool(server: McpServer) {
 
         logCommandParams('wait_for', payload);
 
-        const result = await socketClient.sendCommand('wait_for', payload);
+        // Give the socket round-trip headroom beyond the in-page wait timeout
+        const socketTimeoutMs = Math.max(30000, timeout_ms + 5000);
+        const result = await socketClient.sendCommand('wait_for', payload, socketTimeoutMs);
 
         if (!result || typeof result !== 'object') {
           return createErrorResponse('Failed to get a valid response');

@@ -74,10 +74,10 @@ export function registerQueryPageTool(server: McpServer) {
       wait_for_stable: z.boolean().optional().describe("(map) Wait for DOM mutations to settle before scanning. Default: false."),
       quiet_ms: z.number().int().nonnegative().optional().describe("(map) Milliseconds of mutation silence for stability. Default: 300."),
       max_wait_ms: z.number().int().nonnegative().optional().describe("(map) Max wait for DOM stability in ms. Default: 3000."),
-      timeout_secs: z.number().int().positive().optional().describe("(map) Rust-side timeout in seconds. Default: 10."),
+      timeout_secs: z.number().int().positive().max(300).optional().describe("(map) Rust-side timeout in seconds. Default: 10. Max: 300 (5 minutes)."),
       include_metadata: z.boolean().optional().describe("(map) Include structured page metadata (JSON-LD, OpenGraph, description). Default: true."),
       // find_element mode options
-      selector_type: z.enum(["ref", "id", "class", "tag", "text"]).optional().describe("(find_element) Selector type. 'ref' uses numbered reference from map mode."),
+      selector_type: z.enum(["ref", "id", "class", "css", "tag", "text"]).optional().describe("(find_element) Selector type. 'ref' uses numbered reference from map mode. 'css' accepts any CSS selector."),
       selector_value: z.string().optional().describe("(find_element) Selector value. For 'ref', the ref number as string."),
       should_click: z.boolean().optional().describe("(find_element) Click the element once found. Default: false."),
     },
@@ -130,7 +130,11 @@ export function registerQueryPageTool(server: McpServer) {
             if (params.timeout_secs !== undefined) payload.timeout_secs = params.timeout_secs;
 
             logCommandParams('get_page_map', payload);
-            const result = await socketClient.sendCommand('get_page_map', payload);
+            // Give the socket round-trip headroom beyond the Rust-side timeout
+            const socketTimeoutMs = params.timeout_secs !== undefined
+              ? Math.max(30000, params.timeout_secs * 1000 + 5000)
+              : 30000;
+            const result = await socketClient.sendCommand('get_page_map', payload, socketTimeoutMs);
 
             if (!result || typeof result !== 'object') {
               return createErrorResponse('Failed to get a valid response');

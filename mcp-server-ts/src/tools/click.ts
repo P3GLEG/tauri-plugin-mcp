@@ -29,7 +29,7 @@ export function registerClickTool(server: McpServer) {
       y: z.number().optional().describe("Y coordinate in CSS pixels. Required if no selector provided."),
       button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button. Default: 'left'."),
       click_type: z.enum(["single", "double"]).optional().describe("Click type. 'double' sends two rapid clicks. Default: 'single'."),
-      selector_type: z.enum(["ref", "id", "class", "tag", "text"]).optional().describe("Selector type to find element. 'ref' uses numbered ref from query_page map mode."),
+      selector_type: z.enum(["ref", "id", "class", "css", "tag", "text"]).optional().describe("Selector type to find element. 'ref' uses numbered ref from query_page map mode. 'css' accepts any CSS selector."),
       selector_value: z.string().optional().describe("Selector value. For 'ref', provide the ref number as string."),
       window_label: z.string().optional().describe("Target window. Defaults to 'main'."),
     },

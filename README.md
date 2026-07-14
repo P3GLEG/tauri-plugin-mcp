@@ -25,13 +25,13 @@ tauri-plugin-mcp = { git = "https://github.com/P3GLEG/tauri-plugin-mcp" }
 
 ## Tools
 
-The MCP server exposes 10 high-level tools to AI agents:
+The MCP server exposes 13 high-level tools to AI agents:
 
 | Tool | Description |
 |------|-------------|
 | **take_screenshot** | Captures a screenshot of an application window. Saves full image to disk with small thumbnail inline (optimized for token efficiency). |
 | **query_page** | Inspects the current page. Modes: `map` (structured element refs), `html` (raw DOM), `state` (URL/title/scroll/viewport), `find_element` (CSS pixel coordinates for clicking), `app_info` (app metadata, windows, monitors). |
-| **click** | Clicks at x/y coordinates or via selector (ref, id, class, tag, text). Selector-based clicks auto-resolve element position. |
+| **click** | Clicks at x/y coordinates or via selector (ref, id, class, css, tag, text). Selector-based clicks auto-resolve element position. |
 | **type_text** | Types text into the page. Supports a `fields` array for bulk form fill, selector targeting, or typing into the focused element. Works with inputs, textareas, contentEditable, React, Lexical, and Slate. |
 | **mouse_action** | Non-click mouse actions: `hover`, `scroll` (by direction/amount/to element/to top/bottom), `drag` (start to end coordinates). |
 | **navigate** | Webview navigation: `goto` (URL), `back`/`forward` (with optional delta), `reload`. |
@@ -39,6 +39,9 @@ The MCP server exposes 10 high-level tools to AI agents:
 | **manage_storage** | localStorage operations (get/set/remove/clear/keys) and cookie management (get/clear). |
 | **manage_window** | Window control (list/focus/minimize/maximize/close/position/size/fullscreen), zoom, devtools, and webview state management. |
 | **wait_for** | Waits for a condition: text appearing/disappearing, element visible/hidden/attached/detached. Useful after async content loads. |
+| **restart_app** | Restarts the Tauri application and waits for it to come back online. Force-kills a frozen app (IPC mode only). |
+| **query_logs** | Queries buffered app logs (Rust `log!()` output and webview `console.*` calls) with level/source/substring filters, pagination, and a summary mode. |
+| **log_mark** | Inserts begin/end markers into the log buffer so `query_logs` can return exactly the logs produced by an action. |
 
 ## Setup
 
@@ -121,6 +124,40 @@ Make sure your Tauri app uses the same connection mode:
         .tcp_localhost(4000)
 ))
 ```
+
+### Running multiple app instances
+
+The Rust plugin honors the `TAURI_MCP_IPC_PATH` environment variable (which overrides the configured IPC socket path) and `TAURI_MCP_TCP_PORT` for TCP mode. To drive several app instances side by side, launch each instance with its own socket path:
+
+```bash
+TAURI_MCP_IPC_PATH=/tmp/myapp-a.sock pnpm tauri dev
+TAURI_MCP_IPC_PATH=/tmp/myapp-b.sock pnpm tauri dev
+```
+
+Then register one MCP server entry per instance, each with the matching `TAURI_MCP_IPC_PATH` in its env block (the TS server reads the same variable):
+
+```json
+{
+  "mcpServers": {
+    "tauri-mcp-instance-a": {
+      "command": "npx",
+      "args": ["tauri-plugin-mcp-server"],
+      "env": {
+        "TAURI_MCP_IPC_PATH": "/tmp/myapp-a.sock"
+      }
+    },
+    "tauri-mcp-instance-b": {
+      "command": "npx",
+      "args": ["tauri-plugin-mcp-server"],
+      "env": {
+        "TAURI_MCP_IPC_PATH": "/tmp/myapp-b.sock"
+      }
+    }
+  }
+}
+```
+
+For TCP, give each instance its own `TAURI_MCP_TCP_PORT` instead.
 
 ## Building from source
 

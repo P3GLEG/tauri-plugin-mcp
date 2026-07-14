@@ -268,6 +268,13 @@ async function handleGetElementPositionRequest(event: any) {
                     debugInfo.push(`Found ${elemsByTag.length} elements with tag="${selectorValue}", using the first one`);
                 }
                 break;
+            case 'css':
+                // Any CSS selector — first match
+                element = document.querySelector(selectorValue);
+                if (!element) {
+                    debugInfo.push(`No element found matching CSS selector "${selectorValue}"`);
+                }
+                break;
             case 'text':
                 // Find element by text content
                 element = findElementByText(selectorValue);
@@ -1470,6 +1477,13 @@ async function handleSendTextToElementRequest(event: any) {
                     debugInfo.push(`Found ${elemsByTag.length} elements with tag="${selectorValue}", using the first one`);
                 }
                 break;
+            case 'css':
+                // Any CSS selector — first match
+                element = document.querySelector(selectorValue);
+                if (!element) {
+                    debugInfo.push(`No element found matching CSS selector "${selectorValue}"`);
+                }
+                break;
             case 'text':
                 // Find element by text content
                 element = findElementByText(selectorValue);
@@ -2042,9 +2056,8 @@ async function handleFillFormRequest(event: any) {
 
                 if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
                     el.focus();
-                    // simulateReactInputTyping already clears via select+delete
-                    // so we just call it directly (clear param is implicit)
-                    await simulateReactInputTyping(el, field.value, 0);
+                    // Forward the field's clear preference (default true)
+                    await simulateReactInputTyping(el, field.value, 0, clear);
                 } else if (el instanceof HTMLSelectElement) {
                     el.focus();
                     el.value = field.value;

@@ -9,7 +9,8 @@ export function registerManageStorageTool(server: McpServer) {
     "Manages browser storage. For localStorage: get/set/remove items, clear all, or list keys. For cookies: get all cookies, get cookies for a URL, or clear all browsing data (nuclear — clears cookies, cache, and localStorage).",
     {
       store: z.enum(["local_storage", "cookies"]).describe("Which storage to manage."),
-      action: z.string().describe("For local_storage: 'get', 'set', 'remove', 'clear', 'keys'. For cookies: 'get_all', 'get_for_url', 'clear_all'."),
+      action: z.enum(["get", "set", "remove", "clear", "keys", "get_all", "get_for_url", "clear_all"])
+        .describe("Action to perform. Valid for store='local_storage': 'get', 'set', 'remove', 'clear', 'keys'. Valid for store='cookies': 'get_all', 'get_for_url', 'clear_all'. Note: 'clear_all' clears ALL browsing data (cookies, cache, AND localStorage), not just cookies."),
       key: z.string().optional().describe("(local_storage) Key name. Required for get/set/remove."),
       value: z.string().optional().describe("(local_storage) Value to store. Required for 'set'."),
       url: z.string().optional().describe("(cookies) URL to get cookies for. Required for 'get_for_url'."),
@@ -19,7 +20,8 @@ export function registerManageStorageTool(server: McpServer) {
       title: "Manage Browser Storage",
       readOnlyHint: false,
       destructiveHint: true,
-      idempotentHint: true,
+      // Not idempotent: 'set' overwrites values and 'clear_all' wipes all browsing data
+      idempotentHint: false,
       openWorldHint: false,
     },
     async (params) => {
