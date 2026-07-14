@@ -216,7 +216,9 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
     // capture Rust-side logs without owning the global `log` logger (which
     // tauri-plugin-log already holds). Cheap and conflict-free: if no
     // tauri-plugin-log is installed the listener simply receives nothing.
-    {
+    // Skipped when our ring-buffer logger owns the global `log` slot
+    // (capture_rust_logs), which would otherwise capture every record twice.
+    if !crate::log_buffer::logger_is_active() {
         use tauri::Listener;
         app.listen_any("log://log", |event| {
             #[derive(serde::Deserialize)]

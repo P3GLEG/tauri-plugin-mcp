@@ -210,6 +210,10 @@ impl<R: Runtime> SocketServer<R> {
         info!("[TAURI_MCP] Spawning IPC listener task");
         self.listener_task = Some(tokio::spawn(async move {
             info!("[TAURI_MCP] Listener task started for IPC socket");
+            // Connection handlers live in this JoinSet so they are aborted
+            // (via shutdown() or the set's Drop when this task is aborted)
+            // instead of outliving stop() with a live AppHandle.
+            let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {
@@ -225,7 +229,7 @@ impl<R: Runtime> SocketServer<R> {
                                 info!("[TAURI_MCP] Accepted new IPC connection");
                                 let app_clone = app.clone();
                                 let auth_token_clone = auth_token.clone();
-                                tokio::spawn(async move {
+                                connections.spawn(async move {
                                     let (reader, writer) = tokio::io::split(stream);
                                     if let Err(e) = handle_client_async(reader, writer, app_clone, auth_token_clone).await {
                                         if is_disconnect_crate_error(&e) {
@@ -235,6 +239,8 @@ impl<R: Runtime> SocketServer<R> {
                                         }
                                     }
                                 });
+                                // Reap any handlers that have already finished.
+                                while connections.try_join_next().is_some() {}
                             }
                             Err(e) => {
                                 if running.load(Ordering::Acquire) {
@@ -246,6 +252,7 @@ impl<R: Runtime> SocketServer<R> {
                     }
                 }
             }
+            connections.shutdown().await;
             info!("[TAURI_MCP] IPC listener task ending");
         }));
 
@@ -297,6 +304,8 @@ impl<R: Runtime> SocketServer<R> {
         info!("[TAURI_MCP] Spawning TCP listener task");
         self.listener_task = Some(tokio::spawn(async move {
             info!("[TAURI_MCP] Listener task started for TCP socket at {}", addr);
+            // See the IPC listener: connection handlers must not outlive stop().
+            let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => {
@@ -312,12 +321,13 @@ impl<R: Runtime> SocketServer<R> {
                                 info!("[TAURI_MCP] Accepted new TCP connection from: {}", addr);
                                 let app_clone = app.clone();
                                 let auth_token_clone = auth_token.clone();
-                                tokio::spawn(async move {
+                                connections.spawn(async move {
                                     let (reader, writer) = tokio::io::split(stream);
                                     if let Err(e) = handle_client_async(reader, writer, app_clone, auth_token_clone).await {
                                         error!("[TAURI_MCP] Error handling TCP client: {}", e);
                                     }
                                 });
+                                while connections.try_join_next().is_some() {}
                             }
                             Err(e) => {
                                 if running.load(Ordering::Acquire) {
@@ -329,6 +339,7 @@ impl<R: Runtime> SocketServer<R> {
                     }
                 }
             }
+            connections.shutdown().await;
             info!("[TAURI_MCP] TCP listener task ending");
         }));
 
@@ -457,9 +468,16 @@ impl<R: Runtime> SocketServer<R> {
 }
 
 /// Constant-time byte comparison to prevent timing side-channels on auth tokens.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+fn ct_eq(provided: &[u8], expected: &[u8]) -> bool {
     use subtle::ConstantTimeEq;
-    a.ct_eq(b).into()
+    if provided.len() != expected.len() {
+        // subtle's ct_eq short-circuits on unequal lengths; burn the same
+        // time as a full comparison so duration doesn't reveal the expected
+        // token's length.
+        let _ = expected.ct_eq(expected);
+        return false;
+    }
+    provided.ct_eq(expected).into()
 }
 
 /// Helper to check if an IO error indicates client disconnection

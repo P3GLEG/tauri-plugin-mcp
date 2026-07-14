@@ -497,6 +497,14 @@ impl Log for BufferLogger {
 }
 
 static LOGGER_INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LOGGER_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the ring-buffer logger actually owns the global `log` slot.
+/// When true, Rust logs are already captured directly and the `log://log`
+/// event listener must not also push them (double capture).
+pub fn logger_is_active() -> bool {
+    LOGGER_ACTIVE.load(Ordering::Acquire)
+}
 
 /// Install the ring-buffer logger as the global `log` logger. Safe to call
 /// multiple times — only the first call has effect. If another logger is
@@ -509,6 +517,7 @@ pub fn install_logger() {
     let logger = Box::new(BufferLogger { delegate: None });
     if log::set_boxed_logger(logger).is_ok() {
         log::set_max_level(log::LevelFilter::Debug);
+        LOGGER_ACTIVE.store(true, Ordering::Release);
     } else {
         // Another logger is in place; we'll only capture JS-side logs.
         eprintln!(
