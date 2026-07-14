@@ -64,7 +64,6 @@ impl Default for SocketType {
 }
 
 /// Plugin configuration options.
-#[derive(Default)]
 pub struct PluginConfig {
     /// Application name (used for default socket naming)
     pub application_name: String,
@@ -86,6 +85,14 @@ pub struct PluginConfig {
     /// `tauri-plugin-log`) and `log` only allows one. JS console.* logs
     /// are always captured regardless of this flag.
     pub capture_rust_logs: bool,
+}
+
+impl Default for PluginConfig {
+    /// Matches `PluginConfig::new(String::new())`: the socket server starts
+    /// automatically by default (`start_socket_server: true`).
+    fn default() -> Self {
+        Self::new(String::new())
+    }
 }
 
 impl PluginConfig {
@@ -158,7 +165,60 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 }
 
 /// Initializes the plugin with the given configuration.
+///
+/// # Multi-instance support via environment variables
+///
+/// To run several copies of an app concurrently without socket collisions,
+/// two environment variables are honored and take precedence over the
+/// programmatic configuration (the TypeScript MCP server reads the same
+/// variable names, giving symmetric per-instance configuration):
+///
+/// - `TAURI_MCP_IPC_PATH` — when the socket type is IPC, overrides the
+///   IPC socket path (Unix domain socket path / Windows named pipe name).
+/// - `TAURI_MCP_TCP_PORT` — when the socket type is TCP, overrides the
+///   TCP port. Must parse as a `u16`; invalid values are ignored with a
+///   warning.
 pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
+    let mut config = config;
+
+    // Environment overrides for multi-instance support. Env vars take
+    // precedence over programmatic config.
+    if let SocketType::Ipc { .. } = &config.socket_type {
+        if let Ok(path) = std::env::var("TAURI_MCP_IPC_PATH") {
+            if !path.is_empty() {
+                info!(
+                    "[TAURI_MCP] Overriding IPC socket path from TAURI_MCP_IPC_PATH env var: {}",
+                    path
+                );
+                config.socket_type = SocketType::Ipc {
+                    path: Some(std::path::PathBuf::from(path)),
+                };
+            }
+        }
+    }
+    if let SocketType::Tcp { host, port } = &config.socket_type {
+        if let Ok(port_str) = std::env::var("TAURI_MCP_TCP_PORT") {
+            match port_str.parse::<u16>() {
+                Ok(new_port) => {
+                    info!(
+                        "[TAURI_MCP] Overriding TCP port from TAURI_MCP_TCP_PORT env var: {} (was {})",
+                        new_port, port
+                    );
+                    config.socket_type = SocketType::Tcp {
+                        host: host.clone(),
+                        port: new_port,
+                    };
+                }
+                Err(e) => {
+                    warn!(
+                        "[TAURI_MCP] Ignoring invalid TAURI_MCP_TCP_PORT value '{}': {}",
+                        port_str, e
+                    );
+                }
+            }
+        }
+    }
+
     // Log socket configuration
     match &config.socket_type {
         SocketType::Ipc { path } => {

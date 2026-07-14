@@ -18,17 +18,19 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(String),
 
+    /// IO error that preserves the underlying `std::io::Error` so callers
+    /// can match on `std::io::ErrorKind` (e.g. to detect disconnects).
+    /// Not serializable; skipped by serde. Use `Io(String)` for errors that
+    /// must cross a serialization boundary.
+    #[error("IO error: {0}")]
+    #[serde(skip)]
+    IoSource(#[from] std::io::Error),
+
     #[error("{0}")]
     Anyhow(String),
 
     #[error("Tauri error: {0}")]
     TauriError(String),
-}
-
-impl From<std::io::Error> for Error {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error.to_string())
-    }
 }
 
 impl From<anyhow::Error> for Error {

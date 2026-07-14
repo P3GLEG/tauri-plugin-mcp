@@ -24,6 +24,13 @@ const MAX_MESSAGE_LEN: usize = 8192;
 /// from React render-loop / polling-callback log floods that would otherwise
 /// evict useful older entries.
 const COALESCE_WINDOW_MS: u64 = 1000;
+/// Cap on a single coalesce run: after this many repeats a new entry is
+/// started, so `since_id`-cursor consumers observe progress while a message
+/// keeps repeating.
+const MAX_COALESCE_REPEATS: u32 = 100;
+/// Cap on how long a single coalesce run may span (measured from the first
+/// occurrence in the run). After this, a new entry is started.
+const MAX_COALESCE_RUN_MS: u64 = 5000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -51,6 +58,11 @@ pub struct LogEntry {
     /// occurrence; the latest is `ts + (repeat-1) * COALESCE_WINDOW_MS` max.
     #[serde(skip_serializing_if = "is_one", default = "default_repeat")]
     pub repeat: u32,
+    /// Timestamp (ms since epoch) of the first occurrence in this entry's
+    /// coalesce run. Internal bookkeeping for capping run length; not
+    /// serialized.
+    #[serde(skip)]
+    first_ts: u64,
 }
 
 fn is_one(n: &u32) -> bool {
@@ -91,14 +103,15 @@ impl LogBuffer {
             Some(n) if !n.is_empty() => format!("[mark:{}] {}", tag, n),
             _ => format!("[mark:{}]", tag),
         };
-        self.push(
+        // Markers are never coalesced, so `push` always returns a fresh id
+        // here. Using the returned id (instead of re-deriving it from
+        // `next_id`) avoids racing with concurrent pushes.
+        let id = self.push(
             "info",
             LogSource::Marker,
             Some(tag.to_string()),
             message,
         );
-        // The id we just assigned is next_id - 1.
-        let id = self.next_id.load(Ordering::Relaxed).saturating_sub(1);
         let mut m = self.markers_lock();
         if m.len() >= MARKERS_CAPACITY {
             m.pop_front();
@@ -141,7 +154,10 @@ impl LogBuffer {
         self.markers.lock()
     }
 
-    pub fn push(&self, level: &str, source: LogSource, target: Option<String>, message: String) {
+    /// Push an entry into the buffer. Returns the id of the entry the
+    /// message landed in — either a freshly assigned id, or the id of the
+    /// existing entry when the message was coalesced into it.
+    pub fn push(&self, level: &str, source: LogSource, target: Option<String>, message: String) -> u64 {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -160,6 +176,9 @@ impl LogBuffer {
         // Coalesce: if the most recent entry is the same level+source+message
         // within COALESCE_WINDOW_MS, just bump its repeat counter and refresh ts.
         // Marker entries are never coalesced — each mark is meaningful.
+        // A run is capped (MAX_COALESCE_REPEATS repeats or MAX_COALESCE_RUN_MS
+        // from its first occurrence) so `since_id`-cursor consumers still
+        // observe new ids while a message keeps repeating.
         if !matches!(source, LogSource::Marker) {
             if let Some(last) = guard.back_mut() {
                 if last.level == level
@@ -167,10 +186,12 @@ impl LogBuffer {
                     && last.message == message
                     && last.target.as_deref() == target.as_deref()
                     && ts.saturating_sub(last.ts) <= COALESCE_WINDOW_MS
+                    && last.repeat < MAX_COALESCE_REPEATS
+                    && ts.saturating_sub(last.first_ts) <= MAX_COALESCE_RUN_MS
                 {
                     last.repeat = last.repeat.saturating_add(1);
                     last.ts = ts;
-                    return;
+                    return last.id;
                 }
             }
         }
@@ -184,6 +205,7 @@ impl LogBuffer {
             target,
             message,
             repeat: 1,
+            first_ts: ts,
         };
 
         if guard.len() >= self.capacity {
@@ -191,6 +213,7 @@ impl LogBuffer {
             self.dropped_total.fetch_add(1, Ordering::Relaxed);
         }
         guard.push_back(entry);
+        id
     }
 
     /// Public convenience for hosts that want to forward their existing
@@ -643,6 +666,32 @@ mod tests {
         let r = buf.query(&LogQuery::default());
         assert_eq!(r.entries.len(), 1, "100 identical pushes should coalesce");
         assert_eq!(r.entries[0].repeat, 100);
+    }
+
+    #[test]
+    fn coalesce_run_capped_so_cursors_see_progress() {
+        let buf = LogBuffer::new(50);
+        for _ in 0..250 {
+            buf.push("warn", LogSource::Js, None, "render-loop spam".into());
+        }
+        let r = buf.query(&LogQuery::default());
+        // Runs are capped at MAX_COALESCE_REPEATS, so 250 pushes yield
+        // multiple entries (new ids) instead of one ever-growing entry.
+        assert_eq!(r.entries.len(), 3);
+        assert_eq!(r.entries[0].repeat, MAX_COALESCE_REPEATS);
+        assert_eq!(r.entries[1].repeat, MAX_COALESCE_REPEATS);
+        assert_eq!(r.entries[2].repeat, 50);
+        assert!(r.entries[0].id < r.entries[1].id);
+    }
+
+    #[test]
+    fn push_returns_assigned_or_coalesced_id() {
+        let buf = LogBuffer::new(50);
+        let a = buf.push("info", LogSource::Js, None, "x".into());
+        let b = buf.push("info", LogSource::Js, None, "x".into());
+        assert_eq!(a, b, "coalesced push returns the existing entry id");
+        let c = buf.push("info", LogSource::Js, None, "y".into());
+        assert!(c > a);
     }
 
     #[test]

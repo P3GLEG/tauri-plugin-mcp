@@ -7,12 +7,16 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Runtime};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use log::{info, warn, error, trace};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
+
+/// Maximum accepted request-line length (10 MB). Connections sending longer
+/// lines are dropped before any parsing or auth checking to bound memory use.
+const MAX_LINE_BYTES: u64 = 10 * 1024 * 1024;
 use crate::tools;
 use crate::SocketType;
 
@@ -175,6 +179,25 @@ impl<R: Runtime> SocketServer<R> {
                 }
             })?;
 
+        // Restrict the socket file to the owning user (0o600) so other local
+        // users cannot connect to an unauthenticated server.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let socket_path = if let Some(p) = &path {
+                p.to_string_lossy().to_string()
+            } else {
+                std::env::temp_dir().join("tauri-mcp.sock").to_string_lossy().to_string()
+            };
+            match std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)) {
+                Ok(_) => info!("[TAURI_MCP] Set socket file permissions to 0600: {}", socket_path),
+                Err(e) => warn!(
+                    "[TAURI_MCP] Failed to set socket file permissions on {}: {}",
+                    socket_path, e
+                ),
+            }
+        }
+
         self.write_auth_token_file()?;
         self.running.store(true, Ordering::Release);
         info!("[TAURI_MCP] Set running flag to true");
@@ -205,7 +228,7 @@ impl<R: Runtime> SocketServer<R> {
                                 tokio::spawn(async move {
                                     let (reader, writer) = tokio::io::split(stream);
                                     if let Err(e) = handle_client_async(reader, writer, app_clone, auth_token_clone).await {
-                                        if e.to_string().contains("No process is on the other end of the pipe") {
+                                        if is_disconnect_crate_error(&e) {
                                             info!("[TAURI_MCP] Client disconnected normally");
                                         } else {
                                             error!("[TAURI_MCP] Error handling IPC client: {}", e);
@@ -312,20 +335,25 @@ impl<R: Runtime> SocketServer<R> {
         Ok(())
     }
 
-    fn write_auth_token_file(&mut self) -> crate::Result<()> {
-        if let Some(ref token) = self.auth_token {
-            let token_path = match &self.socket_type {
-                SocketType::Ipc { path } => {
-                    let socket_path = path.clone().unwrap_or_else(|| {
-                        std::env::temp_dir().join("tauri-mcp.sock")
-                    });
-                    format!("{}.token", socket_path.display())
-                }
-                SocketType::Tcp { port, .. } => {
-                    format!("{}/tauri-mcp-{}.token", std::env::temp_dir().display(), port)
-                }
-            };
+    /// Compute the on-disk token file path for the configured socket.
+    fn token_file_path_for_socket(&self) -> String {
+        match &self.socket_type {
+            SocketType::Ipc { path } => {
+                let socket_path = path.clone().unwrap_or_else(|| {
+                    std::env::temp_dir().join("tauri-mcp.sock")
+                });
+                format!("{}.token", socket_path.display())
+            }
+            SocketType::Tcp { port, .. } => {
+                format!("{}/tauri-mcp-{}.token", std::env::temp_dir().display(), port)
+            }
+        }
+    }
 
+    fn write_auth_token_file(&mut self) -> crate::Result<()> {
+        let token_path = self.token_file_path_for_socket();
+
+        if let Some(ref token) = self.auth_token {
             // Write with restrictive permissions on Unix (owner-only read/write)
             let write_result = {
                 #[cfg(unix)]
@@ -356,6 +384,22 @@ impl<R: Runtime> SocketServer<R> {
                 Err(e) => {
                     error!("[TAURI_MCP] Failed to write auth token file {}: {}", token_path, e);
                 }
+            }
+        } else {
+            // No token configured this run: remove any leftover token file
+            // from a crashed prior run so clients don't pick up a stale token.
+            match std::fs::remove_file(&token_path) {
+                Ok(_) => info!(
+                    "[TAURI_MCP] Removed stale auth token file from previous run: {}",
+                    token_path
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Nothing to clean up.
+                }
+                Err(e) => warn!(
+                    "[TAURI_MCP] Failed to remove stale auth token file {}: {}",
+                    token_path, e
+                ),
             }
         }
         Ok(())
@@ -420,9 +464,18 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// Helper to check if an IO error indicates client disconnection
 fn is_disconnect_error(e: &std::io::Error) -> bool {
-    e.to_string().contains("No process is on the other end of the pipe")
-        || e.kind() == std::io::ErrorKind::BrokenPipe
-        || e.kind() == std::io::ErrorKind::ConnectionReset
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::UnexpectedEof
+    )
+}
+
+/// Check whether a crate-level error wraps an IO disconnect.
+fn is_disconnect_crate_error(e: &Error) -> bool {
+    matches!(e, Error::IoSource(io_err) if is_disconnect_error(io_err))
 }
 
 async fn handle_client_async<R, Reader, Writer>(
@@ -443,12 +496,24 @@ where
 
     loop {
         line.clear();
-        match reader.read_line(&mut line).await {
+        // Cap the accepted line length so an unauthenticated client can't
+        // exhaust memory by streaming an endless line (pre-auth DoS). We read
+        // through a `take` limit of MAX+1: if more than MAX bytes arrive
+        // without a newline, drop the connection before parsing.
+        let mut limited = (&mut reader).take(MAX_LINE_BYTES + 1);
+        match limited.read_line(&mut line).await {
             Ok(0) => {
                 info!("[TAURI_MCP] Client disconnected cleanly");
                 return Ok(());
             }
-            Ok(_) => {
+            Ok(n) => {
+                if n as u64 > MAX_LINE_BYTES {
+                    warn!(
+                        "[TAURI_MCP] Request line exceeded {} bytes; dropping connection",
+                        MAX_LINE_BYTES
+                    );
+                    return Ok(());
+                }
                 if log::log_enabled!(log::Level::Trace) {
                     trace!("[TAURI_MCP] Read: {}", line.trim());
                 }
@@ -459,7 +524,7 @@ where
                     info!("[TAURI_MCP] Client disconnected during read (pipe error)");
                     return Ok(());
                 }
-                return Err(Error::Io(format!("Error reading from socket: {}", e)));
+                return Err(Error::IoSource(e));
             }
         }
 
@@ -567,7 +632,7 @@ async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
             info!("[TAURI_MCP] Client disconnected during write (pipe error)");
             return Ok(());
         }
-        Err(e) => return Err(Error::Io(format!("Error writing response: {}", e))),
+        Err(e) => return Err(Error::IoSource(e)),
     }
     match writer.flush().await {
         Ok(_) => Ok(()),
@@ -575,7 +640,7 @@ async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
             info!("[TAURI_MCP] Client disconnected during flush (pipe error)");
             Ok(())
         }
-        Err(e) => Err(Error::Io(format!("Error flushing response: {}", e))),
+        Err(e) => Err(Error::IoSource(e)),
     }
 }
 
