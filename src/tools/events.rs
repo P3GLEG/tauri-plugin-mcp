@@ -32,12 +32,7 @@ pub async fn handle_manage_events<R: Runtime>(
             app.emit(&event_name, event_payload.clone()).map_err(|e| {
                 crate::error::Error::Anyhow(format!("Failed to emit event: {}", e))
             })?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"emitted": event_name})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"emitted": event_name}))))
         }
         "emit_to" => {
             let event_name = parsed.event.ok_or_else(|| {
@@ -51,12 +46,7 @@ pub async fn handle_manage_events<R: Runtime>(
                 .map_err(|e| {
                     crate::error::Error::Anyhow(format!("Failed to emit_to event: {}", e))
                 })?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"emitted": event_name, "target": target})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"emitted": event_name, "target": target}))))
         }
         "listen" => {
             let event_name = parsed.event.ok_or_else(|| {
@@ -81,17 +71,12 @@ pub async fn handle_manage_events<R: Runtime>(
             app.unlisten(handler);
 
             let events = collected.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({
                     "event": event_name,
                     "durationMs": duration_ms,
                     "count": events.len(),
                     "events": events,
-                })),
-                error: None,
-                id: None,
-            })
+                }))))
         }
         "sniff" => {
             let event_name = parsed.event.ok_or_else(|| {
@@ -118,26 +103,16 @@ pub async fn handle_manage_events<R: Runtime>(
             app.unlisten(handler);
 
             let events = collected.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({
                     "event": event_name,
                     "durationMs": duration_ms,
                     "count": events.len(),
                     "events": events,
-                })),
-                error: None,
-                id: None,
-            })
+                }))))
         }
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!(
+        _ => Ok(SocketResponse::err(None, format!(
                 "Unknown action '{}'. Valid actions: emit, emit_to, listen, sniff",
                 parsed.action
-            )),
-            id: None,
-        }),
+            ))),
     }
 }

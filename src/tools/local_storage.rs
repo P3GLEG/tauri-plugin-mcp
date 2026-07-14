@@ -19,35 +19,20 @@ pub async fn handle_get_local_storage<R: Runtime>(
         "get" => {}
         "remove" => {
             if params.key.is_none() {
-                return Ok(SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some("Key is required for remove operations".to_string()),
-                    id: None,
-                });
+                return Ok(SocketResponse::err(None, "Key is required for remove operations".to_string()));
             }
         }
         "set" => {
             if params.key.is_none() || params.value.is_none() {
-                return Ok(SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some("Both key and value are required for set operation".to_string()),
-                    id: None,
-                });
+                return Ok(SocketResponse::err(None, "Both key and value are required for set operation".to_string()));
             }
         }
         "clear" | "keys" => {}
         _ => {
-            return Ok(SocketResponse {
-                success: false,
-                data: None,
-                error: Some(format!(
+            return Ok(SocketResponse::err(None, format!(
                     "Unsupported localStorage action: {}",
                     params.action
-                )),
-                id: None,
-            });
+                )));
         }
     };
 
@@ -73,35 +58,26 @@ pub async fn handle_get_local_storage<R: Runtime>(
         std::time::Duration::from_secs(5),
     ).await {
         Ok(result_string) => {
-            let response: Value = serde_json::from_str(&result_string).map_err(|e| {
-                Error::Anyhow(format!("Failed to parse localStorage response: {}", e))
-            })?;
+            // Be lenient with non-JSON responses (same approach as
+            // parse_js_response): report failure in the response payload
+            // instead of surfacing a transport-level error.
+            let response: Value = match serde_json::from_str(&result_string) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(SocketResponse::err(None, format!("Failed to parse localStorage response: {}", e)));
+                }
+            };
 
             if let Some(error) = response.get("error").and_then(|v| v.as_str()) {
-                return Ok(SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(error.to_string()),
-                    id: None,
-                });
+                return Ok(SocketResponse::err(None, error.to_string()));
             }
 
             let data = response.get("data").cloned().unwrap_or(Value::Null);
-            Ok(SocketResponse {
-                success: true,
-                data: Some(
+            Ok(SocketResponse::ok(None, Some(
                     serde_json::to_value(data)
                         .map_err(|e| Error::Anyhow(format!("Failed to serialize response: {}", e)))?,
-                ),
-                error: None,
-                id: None,
-            })
+                )))
         }
-        Err(e) => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for localStorage response: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(SocketResponse::err(None, format!("Timeout waiting for localStorage response: {}", e))),
     }
 }

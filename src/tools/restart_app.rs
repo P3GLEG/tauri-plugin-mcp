@@ -27,12 +27,7 @@ pub async fn handle_restart_app<R: Runtime>(
         app_handle.restart();
     });
 
-    Ok(SocketResponse {
-        success: true,
-        data: Some(serde_json::json!({
+    Ok(SocketResponse::ok(None, Some(serde_json::json!({
             "message": format!("Restarting application in {}ms", delay_ms)
-        })),
-        error: None,
-        id: None,
-    })
+        }))))
 }

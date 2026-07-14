@@ -32,18 +32,8 @@ pub async fn handle_manage_webview_state<R: Runtime>(
 
     match parsed.action.as_str() {
         "clear_browsing_data" => match webview.clear_all_browsing_data() {
-            Ok(_) => Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"cleared": true})),
-                error: None,
-                id: None,
-            }),
-            Err(e) => Ok(SocketResponse {
-                success: false,
-                data: None,
-                error: Some(format!("Failed to clear browsing data: {}", e)),
-                id: None,
-            }),
+            Ok(_) => Ok(SocketResponse::ok(None, Some(serde_json::json!({"cleared": true})))),
+            Err(e) => Ok(SocketResponse::err(None, format!("Failed to clear browsing data: {}", e))),
         },
         "set_background_color" => {
             let r = parsed.r.unwrap_or(255);
@@ -58,46 +48,26 @@ pub async fn handle_manage_webview_state<R: Runtime>(
                         e
                     ))
                 })?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"r": r, "g": g, "b": b, "a": a})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"r": r, "g": g, "b": b, "a": a}))))
         }
         "get_bounds" => {
             let position = webview.position().ok();
             let size = webview.size().ok();
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({
                     "position": position.map(|p| serde_json::json!({"x": p.x, "y": p.y})),
                     "size": size.map(|s| serde_json::json!({"width": s.width, "height": s.height})),
-                })),
-                error: None,
-                id: None,
-            })
+                }))))
         }
         "set_auto_resize" => {
             let enabled = parsed.enabled.unwrap_or(true);
             webview.set_auto_resize(enabled).map_err(|e| {
                 crate::error::Error::Anyhow(format!("Failed to set auto resize: {}", e))
             })?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"autoResize": enabled})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"autoResize": enabled}))))
         }
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!(
+        _ => Ok(SocketResponse::err(None, format!(
                 "Unknown action '{}'. Valid actions: clear_browsing_data, set_background_color, get_bounds, set_auto_resize",
                 parsed.action
-            )),
-            id: None,
-        }),
+            ))),
     }
 }

@@ -78,10 +78,5 @@ pub async fn handle_get_app_info<R: Runtime>(
         "primaryMonitor": primary_monitor,
     });
 
-    Ok(SocketResponse {
-        success: true,
-        data: Some(data),
-        error: None,
-        id: None,
-    })
+    Ok(SocketResponse::ok(None, Some(data)))
 }

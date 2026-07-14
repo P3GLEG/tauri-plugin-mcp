@@ -106,11 +106,10 @@ pub fn inject_text_via_js<R: Runtime>(
     webview: &Webview<R>,
     params: &TextParams,
 ) -> Result<TextResult, Error> {
-    let text_escaped = params.text
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r");
+    // Serialize the text as a JSON string literal (valid JS), which safely
+    // escapes quotes, backslashes, control chars, and U+2028/U+2029.
+    let text_json = serde_json::to_string(&params.text)
+        .map_err(|e| Error::Anyhow(format!("Failed to encode text as JSON: {}", e)))?;
 
     let delay_ms = params.delay_ms;
 
@@ -123,7 +122,7 @@ pub fn inject_text_via_js<R: Runtime>(
         // Paced typing: inject one character at a time with setTimeout delays
         format!(
             r#"(function() {{
-            var text = '{text}';
+            var text = {text};
             var delay = {delay};
             function typeChar(i) {{
                 if (i >= text.length) return;
@@ -149,13 +148,13 @@ pub fn inject_text_via_js<R: Runtime>(
             }}
             typeChar(0);
         }})();"#,
-            text = text_escaped, delay = delay_ms
+            text = text_json, delay = delay_ms
         )
     } else {
         // Immediate: inject all text at once
         format!(
             r#"(function() {{
-            var text = '{text}';
+            var text = {text};
             var el = document.activeElement;
             if (!el) return;
 
@@ -177,7 +176,7 @@ pub fn inject_text_via_js<R: Runtime>(
                 }}
             }}
         }})();"#,
-            text = text_escaped
+            text = text_json
         )
     };
 

@@ -4,7 +4,7 @@ use crate::shared::ScreenshotParams;
 use crate::tools::take_screenshot::{process_image, process_image_to_file, process_thumbnail};
 use crate::{Error, Result};
 use image::DynamicImage;
-use log::info;
+use log::{debug, error, info};
 use tauri::Runtime;
 
 // Common function for handling the screenshot task and response
@@ -80,6 +80,111 @@ pub fn finalize_screenshot(
             Ok(create_success_response(data_url))
         }
     }
+}
+
+/// Platform-agnostic view of a native window, used for shared window matching.
+#[derive(Debug, Clone)]
+pub struct WindowMatchCandidate {
+    pub title: String,
+    pub app_name: String,
+    pub is_minimized: bool,
+}
+
+/// Shared window-matching ladder used by all platforms.
+///
+/// Returns the index of the best matching candidate, trying in order:
+/// 1. Application name contains match (only when `application_name` is non-empty)
+/// 2. Exact window title match
+/// 3. Case-insensitive window title match
+/// 4. Partial window title match (candidate title contains the search title)
+/// 5. Cross app-name/title partial match (app name appears in the requested
+///    title or vice versa; candidates with empty app names are skipped)
+///
+/// Minimized windows are always skipped.
+pub fn find_matching_window(
+    candidates: &[WindowMatchCandidate],
+    window_title: &str,
+    application_name: &str,
+) -> Option<usize> {
+    let application_name_lower = application_name.to_lowercase();
+    let window_title_lower = window_title.to_lowercase();
+
+    info!(
+        "[TAURI-MCP] Searching for window with title: '{}', app_name: '{}' (case-insensitive)",
+        window_title, application_name
+    );
+
+    debug!("[TAURI-MCP] ============= ALL WINDOWS =============");
+    for candidate in candidates {
+        debug!(
+            "[TAURI-MCP] Window: title='{}', app_name='{}', minimized={}",
+            candidate.title, candidate.app_name, candidate.is_minimized
+        );
+    }
+    debug!("[TAURI-MCP] ======================================");
+
+    let visible = |c: &&(usize, &WindowMatchCandidate)| !c.1.is_minimized;
+    let indexed: Vec<(usize, &WindowMatchCandidate)> = candidates.iter().enumerate().collect();
+
+    // Step 1: Direct application name match (highest priority)
+    if !application_name_lower.is_empty() {
+        for (i, c) in indexed.iter().filter(visible) {
+            if c.app_name.to_lowercase().contains(&application_name_lower) {
+                info!("[TAURI-MCP] Found window by app name: '{}'", c.app_name);
+                return Some(*i);
+            }
+        }
+    }
+
+    // Step 2: Exact window title match
+    for (i, c) in indexed.iter().filter(visible) {
+        if c.title == window_title {
+            info!("[TAURI-MCP] Found window by exact title match: '{}'", c.title);
+            return Some(*i);
+        }
+    }
+
+    // Step 3: Case-insensitive window title match
+    for (i, c) in indexed.iter().filter(visible) {
+        if c.title.to_lowercase() == window_title_lower {
+            info!(
+                "[TAURI-MCP] Found window by case-insensitive title match: '{}'",
+                c.title
+            );
+            return Some(*i);
+        }
+    }
+
+    // Step 4: Partial window title match (title contains search string)
+    if !window_title_lower.is_empty() {
+        for (i, c) in indexed.iter().filter(visible) {
+            if c.title.to_lowercase().contains(&window_title_lower) {
+                info!("[TAURI-MCP] Found window by partial title match: '{}'", c.title);
+                return Some(*i);
+            }
+        }
+    }
+
+    // Step 5: Partial app name / title cross match
+    for (i, c) in indexed.iter().filter(visible) {
+        let app_name = c.app_name.to_lowercase();
+        if app_name.is_empty() {
+            continue;
+        }
+        if app_name.contains(&window_title_lower) || window_title_lower.contains(&app_name) {
+            info!(
+                "[TAURI-MCP] Found window by partial app name match: '{}'",
+                c.app_name
+            );
+            return Some(*i);
+        }
+    }
+
+    error!(
+        "[TAURI-MCP] No matching window found for title='{}', app_name='{}'",
+        window_title, application_name
+    );
+    None
 }
 
 // Helper function to get window title from WindowHandle - supports both architectures

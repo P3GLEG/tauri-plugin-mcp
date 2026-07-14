@@ -1,6 +1,6 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tauri::{Runtime, Webview};
@@ -224,12 +224,22 @@ unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
 }
 
-/// Which CG mouse button is currently held by a `mouse_down`-only call
-/// (-1 = none). Used so intermediate moves during a drag are posted as
-/// *Dragged events (real HID semantics) and so a `click`/`mouse_up`
-/// always clears the pressed state — a synthetic mouseDown is never
-/// left unpaired by the `click` path within a single dispatch.
-static PRESSED_CG_BUTTON: AtomicI32 = AtomicI32::new(-1);
+/// Which CG mouse button is currently held by a `mouse_down`-only call,
+/// keyed by NSWindow window number (absent = none held for that window).
+/// Keying per window keeps interleaved drag operations across different
+/// windows from corrupting each other's state. Used so intermediate moves
+/// during a drag are posted as *Dragged events (real HID semantics) and so
+/// a `click`/`mouse_up` always clears the pressed state — a synthetic
+/// mouseDown is never left unpaired by the `click` path within a single
+/// dispatch.
+static PRESSED_CG_BUTTONS: LazyLock<Mutex<HashMap<i64, i32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn pressed_cg_buttons() -> MutexGuard<'static, HashMap<i64, i32>> {
+    PRESSED_CG_BUTTONS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Keep injected coordinates this many points away from the window's
 /// content-rect edges so they can't land in AppKit's window-edge resize
@@ -346,7 +356,7 @@ pub fn inject_mouse<R: Runtime>(
 
     webview
         .with_webview(move |platform_wv| {
-            let result: Result<(f64, f64, CGPoint), String> = unsafe {
+            let result: Result<(f64, f64, CGPoint, i64), String> = unsafe {
                 let ns_window: Id = platform_wv.ns_window();
                 if ns_window.is_null() {
                     Err("NSWindow is nil".to_string())
@@ -396,7 +406,7 @@ pub fn inject_mouse<R: Runtime>(
                         x, y, css_x, css_y, appkit_x, appkit_y, global.x, global.y
                     );
 
-                    Ok((css_x, css_y, global))
+                    Ok((css_x, css_y, global, get_window_number(ns_window)))
                 }
             };
 
@@ -404,7 +414,7 @@ pub fn inject_mouse<R: Runtime>(
         })
         .map_err(|e| Error::Anyhow(format!("with_webview failed: {}", e)))?;
 
-    let (css_x, css_y, global) = rx
+    let (css_x, css_y, global, window_number) = rx
         .recv_timeout(Duration::from_secs(5))
         .map_err(|e| Error::Anyhow(format!("with_webview timed out: {}", e)))?
         .map_err(Error::Anyhow)?;
@@ -420,10 +430,13 @@ pub fn inject_mouse<R: Runtime>(
         MouseButton::Middle => (CG_EVENT_OTHER_MOUSE_DOWN, CG_EVENT_OTHER_MOUSE_UP),
     };
 
-    // Move to the target first. If a button is held from a previous
-    // mouse_down-only call, this is mid-drag: post a *Dragged event with
-    // the held button so drag semantics are preserved.
-    let held = PRESSED_CG_BUTTON.load(Ordering::SeqCst);
+    // Move to the target first. If a button is held for THIS window from a
+    // previous mouse_down-only call, this is mid-drag: post a *Dragged event
+    // with the held button so drag semantics are preserved.
+    let held = pressed_cg_buttons()
+        .get(&window_number)
+        .copied()
+        .unwrap_or(-1);
     if held >= 0 {
         let (drag_type, drag_button) = match held as u32 {
             CG_MOUSE_BUTTON_RIGHT => (CG_EVENT_RIGHT_MOUSE_DRAGGED, CG_MOUSE_BUTTON_RIGHT),
@@ -440,17 +453,17 @@ pub fn inject_mouse<R: Runtime>(
         post_mouse_event(down_type, global, cg_button, 1);
         std::thread::sleep(Duration::from_millis(20));
         post_mouse_event(up_type, global, cg_button, 1);
-        PRESSED_CG_BUTTON.store(-1, Ordering::SeqCst);
+        pressed_cg_buttons().remove(&window_number);
     } else if mouse_down {
         // Down-only mode exists to support drags (down -> move -> up
         // across separate calls). With window-server delivery this can
         // no longer wedge a nested run loop, but callers MUST follow up
-        // with mouse_up; PRESSED_CG_BUTTON tracks the debt.
+        // with mouse_up; PRESSED_CG_BUTTONS tracks the debt per window.
         post_mouse_event(down_type, global, cg_button, 1);
-        PRESSED_CG_BUTTON.store(cg_button as i32, Ordering::SeqCst);
+        pressed_cg_buttons().insert(window_number, cg_button as i32);
     } else if mouse_up {
         post_mouse_event(up_type, global, cg_button, 1);
-        PRESSED_CG_BUTTON.store(-1, Ordering::SeqCst);
+        pressed_cg_buttons().remove(&window_number);
     }
 
     Ok(InputResult {

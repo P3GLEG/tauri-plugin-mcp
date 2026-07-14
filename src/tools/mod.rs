@@ -93,24 +93,14 @@ pub async fn handle_command<R: Runtime>(
         #[cfg(feature = "devtools")]
         commands::MANAGE_DEVTOOLS => handle_manage_devtools(app, payload).await,
         #[cfg(not(feature = "devtools"))]
-        commands::MANAGE_DEVTOOLS => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some("manage_devtools requires the 'devtools' feature: tauri-plugin-mcp = { features = [\"devtools\"] }".to_string()),
-            id: None,
-        }),
+        commands::MANAGE_DEVTOOLS => Ok(SocketResponse::err(None, "manage_devtools requires the 'devtools' feature: tauri-plugin-mcp = { features = [\"devtools\"] }".to_string())),
         commands::MANAGE_ZOOM => handle_manage_zoom(app, payload).await,
         commands::MANAGE_WEBVIEW_STATE => handle_manage_webview_state(app, payload).await,
         commands::TYPE_INTO_FOCUSED => handle_type_into_focused(app, payload).await,
         commands::RESTART_APP => handle_restart_app(app, payload).await,
         commands::QUERY_LOGS => handle_query_logs(app, payload).await,
         commands::LOG_MARK => handle_log_mark(app, payload).await,
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Unknown command: {}", command)),
-            id: None,
-        }),
+        _ => Ok(SocketResponse::err(None, format!("Unknown command: {}", command))),
     };
 
     // Log the response before returning it

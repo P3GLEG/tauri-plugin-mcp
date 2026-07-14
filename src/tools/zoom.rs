@@ -35,12 +35,7 @@ pub async fn handle_manage_zoom<R: Runtime>(
             webview.set_zoom(scale).map_err(|e| {
                 crate::error::Error::Anyhow(format!("Failed to set zoom: {}", e))
             })?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"action": "set", "scale": scale})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"action": "set", "scale": scale}))))
         }
         "get" => {
             let emit_target = get_emit_target(app, &window_label);
@@ -54,22 +49,12 @@ pub async fn handle_manage_zoom<R: Runtime>(
                 std::time::Duration::from_secs(5),
             ).await {
                 Ok(result) => Ok(parse_js_response(&result)),
-                Err(e) => Ok(SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(format!("Timeout waiting for zoom level: {}", e)),
-                    id: None,
-                }),
+                Err(e) => Ok(SocketResponse::err(None, format!("Timeout waiting for zoom level: {}", e))),
             }
         }
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!(
+        _ => Ok(SocketResponse::err(None, format!(
                 "Unknown action '{}'. Valid actions: set, get",
                 parsed.action
-            )),
-            id: None,
-        }),
+            ))),
     }
 }

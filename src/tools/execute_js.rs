@@ -48,17 +48,18 @@ pub async fn handle_execute_js<R: Runtime>(
         std::time::Duration::from_millis(timeout_ms),
     ).await {
         Ok(result_string) => {
-            let response: Value = serde_json::from_str(&result_string).map_err(|e| {
-                Error::Anyhow(format!("Failed to parse JS response: {}", e))
-            })?;
+            // Be lenient with non-JSON responses (same approach as
+            // parse_js_response): report failure in the response payload
+            // instead of surfacing a transport-level error.
+            let response: Value = match serde_json::from_str(&result_string) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(SocketResponse::err(None, format!("Failed to parse JS response: {}", e)));
+                }
+            };
 
             if let Some(error) = response.get("error").and_then(|v| v.as_str()) {
-                return Ok(SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(error.to_string()),
-                    id: None,
-                });
+                return Ok(SocketResponse::err(None, error.to_string()));
             }
 
             let result = response
@@ -79,18 +80,8 @@ pub async fn handle_execute_js<R: Runtime>(
             })
             .map_err(|e| Error::Anyhow(format!("Failed to serialize response: {}", e)))?;
 
-            Ok(SocketResponse {
-                success: true,
-                data: Some(data),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(data)))
         }
-        Err(e) => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for JS execution: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(SocketResponse::err(None, format!("Timeout waiting for JS execution: {}", e))),
     }
 }

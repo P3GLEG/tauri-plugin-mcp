@@ -66,10 +66,5 @@ pub async fn handle_query_logs<R: Runtime>(
             .map_err(|e| Error::Anyhow(format!("Failed to serialize result: {}", e)))?
     };
 
-    Ok(SocketResponse {
-        success: true,
-        data: Some(data),
-        error: None,
-        id: None,
-    })
+    Ok(SocketResponse::ok(None, Some(data)))
 }
