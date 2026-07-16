@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-16
+
 ### ⚠️ Behavior changes (read before upgrading)
 
 - **Dialog stubs are on by default.** `window.alert`/`confirm`/`prompt` are

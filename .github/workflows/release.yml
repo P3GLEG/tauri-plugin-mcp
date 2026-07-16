@@ -43,6 +43,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - run: gh release create ${{ github.ref_name }} --generate-notes
+      # Use the tag's CHANGELOG.md section as the release body; fall back to
+      # auto-generated notes when no matching section exists.
+      - run: |
+          awk -v ver="${GITHUB_REF_NAME#v}" '
+            /^## / { p = index($0, "[" ver "]") > 0; next }
+            p' CHANGELOG.md > /tmp/release-notes.md
+          if [ -s /tmp/release-notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" --notes-file /tmp/release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --generate-notes
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
