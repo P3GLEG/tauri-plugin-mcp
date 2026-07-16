@@ -2511,7 +2511,14 @@ async function handlePressKeyRequest(event: any) {
     }
 
     try {
-        const { key: rawKey, modifiers = [], repeat = 1, selectorType, selectorValue } = event.payload || {};
+        // Rust forwards omitted optional fields as JSON null (not undefined),
+        // so `= []` destructuring defaults don't apply — coalesce explicitly.
+        const p = event.payload || {};
+        const rawKey = p.key;
+        const modifiers: string[] = Array.isArray(p.modifiers) ? p.modifiers : [];
+        const repeat = (typeof p.repeat === 'number' && p.repeat > 0) ? p.repeat : 1;
+        const selectorType = p.selectorType || null;
+        const selectorValue = p.selectorValue || null;
         if (!rawKey || typeof rawKey !== 'string') {
             throw new Error('key parameter is required (e.g. "Escape", "Enter", "Tab", "ArrowDown", or a single character)');
         }
@@ -2535,7 +2542,7 @@ async function handlePressKeyRequest(event: any) {
                 : (_lastFocusedElement || document.body);
         }
 
-        const mods = new Set((modifiers as string[]).map(m => String(m).toLowerCase()));
+        const mods = new Set(modifiers.map(m => String(m).toLowerCase()));
         const eventInit: KeyboardEventInit = {
             key,
             code: codeForKey(key),
