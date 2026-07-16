@@ -41,8 +41,10 @@ pub async fn handle_manage_ipc<R: Runtime>(
 
 /// Invoke a Tauri command through the webview's own IPC path. This
 /// exercises the app's real invoke pipeline (including capability checks),
-/// and the observed call lands in the capture buffer via the invoke
-/// wrapper like any frontend-originated call.
+/// The invoke is recorded into the IPC ring buffer so `captured`/`commands`
+/// can report it — this is the only reliable way the buffer fills, since
+/// Tauri v2 freezes `__TAURI_INTERNALS__.invoke` and passive capture of
+/// frontend-originated calls is impossible.
 async fn handle_invoke<R: Runtime>(
     app: &AppHandle<R>,
     payload: &Value,
@@ -70,14 +72,17 @@ async fn handle_invoke<R: Runtime>(
     })?;
     let emit_target = get_emit_target(app, window_label);
 
+    let args = payload.get("args").cloned().unwrap_or(json!({}));
+    let args_preview = Some(args.to_string());
     let js_payload = json!({
         "command": command,
-        "args": payload.get("args").cloned().unwrap_or(json!({})),
+        "args": args,
         "timeoutMs": timeout_ms,
     });
 
+    let started = std::time::Instant::now();
     let rust_timeout_secs = (timeout_ms + 2000) / 1000;
-    match emit_and_wait(
+    let response = match emit_and_wait(
         app,
         &emit_target,
         "ipc-invoke",
@@ -87,9 +92,40 @@ async fn handle_invoke<R: Runtime>(
     )
     .await
     {
-        Ok(result) => Ok(parse_js_response(&result)),
-        Err(e) => Ok(SocketResponse::err(None, e.to_string())),
+        Ok(result) => parse_js_response(&result),
+        Err(e) => SocketResponse::err(None, e.to_string()),
+    };
+
+    // Record the agent-issued invoke into the IPC buffer.
+    let duration_ms = Some(started.elapsed().as_millis() as u64);
+    if response.success {
+        let result_preview = response.data.as_ref().and_then(|d| {
+            d.get("result")
+                .and_then(|v| v.as_str().map(str::to_string))
+                .or_else(|| Some(d.to_string()))
+        });
+        ipc_buffer::global().push(
+            "invoke",
+            command.to_string(),
+            "ok",
+            duration_ms,
+            args_preview,
+            result_preview,
+            None,
+        );
+    } else {
+        ipc_buffer::global().push(
+            "invoke",
+            command.to_string(),
+            "error",
+            duration_ms,
+            args_preview,
+            None,
+            response.error.clone(),
+        );
     }
+
+    Ok(response)
 }
 
 fn handle_captured(payload: &Value) -> Result<SocketResponse, crate::error::Error> {
@@ -125,7 +161,7 @@ fn handle_commands() -> Result<SocketResponse, crate::error::Error> {
         Some(json!({
             "observed": observed,
             "declared": exposed,
-            "note": "Tauri has no runtime registry of #[tauri::command] handlers. 'observed' aggregates invoke() traffic captured since app start; 'declared' lists commands the app registered via PluginConfig::expose_commands. Commands never called by the frontend and not declared will not appear.",
+            "note": "Tauri has no runtime registry of #[tauri::command] handlers, and its invoke() is frozen so passive capture of frontend calls is impossible. 'observed' aggregates only IPC this tool mediated (invokes issued via manage_ipc, plus emitted/received events) — NOT organic frontend traffic. 'declared' lists commands the app registered via PluginConfig::expose_commands. To discover the backend surface, declare commands or issue invokes through this tool.",
         })),
     ))
 }

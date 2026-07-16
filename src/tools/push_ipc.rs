@@ -1,7 +1,12 @@
-//! Tauri invoke command that lets the webview-side `invoke()` wrapper
-//! (installed by `listener_patch.js`) record observed IPC calls into the
-//! Rust-side ring buffer. Best-effort observability channel: minimal
-//! validation, previews are capped by the buffer itself.
+//! Opt-in Tauri command for recording IPC activity into the Rust-side ring
+//! buffer surfaced by `manage_ipc`. Tauri v2 freezes
+//! `__TAURI_INTERNALS__.invoke` (non-writable/non-configurable), so the
+//! plugin CANNOT passively wrap it to observe frontend calls. An app that
+//! wants its own invoke traffic in the buffer can wrap its `invoke` and
+//! call `invoke('plugin:mcp|push_ipc', {...})` from that wrapper. Otherwise
+//! the buffer is filled only by IPC that `manage_ipc` itself mediates.
+//! Best-effort observability channel: minimal validation, previews capped
+//! by the buffer.
 
 use crate::ipc_buffer;
 

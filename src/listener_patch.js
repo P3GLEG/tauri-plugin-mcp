@@ -161,75 +161,12 @@
         }, 250);
     }
 
-    // ---- IPC invoke capture ----
-    // Wraps window.__TAURI_INTERNALS__.invoke so every command the frontend
-    // calls is recorded (name, args/result previews, duration, outcome) into
-    // the Rust-side IPC ring buffer, queryable via the manage_ipc tool.
-    // Skips this plugin's own channels and the event/log plumbing to avoid
-    // feedback loops and noise.
-    var IPC_SKIP_PREFIXES = ['plugin:mcp|', 'plugin:event|', 'plugin:log|'];
-    var IPC_PREVIEW_LEN = 400;
-
-    function ipcPreview(v) {
-        if (v === undefined) return undefined;
-        var s = safeStringify(v);
-        return (typeof s === 'string' && s.length > IPC_PREVIEW_LEN) ? s.slice(0, IPC_PREVIEW_LEN) + '…' : s;
-    }
-
-    function shouldSkipIpc(cmd) {
-        if (typeof cmd !== 'string') return true;
-        for (var i = 0; i < IPC_SKIP_PREFIXES.length; i++) {
-            if (cmd.indexOf(IPC_SKIP_PREFIXES[i]) === 0) return true;
-        }
-        return false;
-    }
-
-    function wrapInvoke() {
-        var t = window.__TAURI_INTERNALS__;
-        if (!t || typeof t.invoke !== 'function' || t.invoke.__mcpIpcWrapped) return !!(t && t.invoke && t.invoke.__mcpIpcWrapped);
-        var orig = t.invoke;
-        var wrapped = function(cmd, args) {
-            if (shouldSkipIpc(cmd)) return orig.apply(this, arguments);
-            var start = Date.now();
-            function record(status, value) {
-                try {
-                    orig('plugin:mcp|push_ipc', {
-                        name: String(cmd),
-                        kind: 'invoke',
-                        status: status,
-                        durationMs: Date.now() - start,
-                        argsPreview: ipcPreview(args),
-                        resultPreview: status === 'ok' ? ipcPreview(value) : undefined,
-                        error: status === 'error' ? ipcPreview(value) : undefined
-                    });
-                } catch (_) {}
-            }
-            var p;
-            try {
-                p = orig.apply(this, arguments);
-            } catch (e) {
-                record('error', e);
-                throw e;
-            }
-            if (p && typeof p.then === 'function') {
-                p.then(function(v) { record('ok', v); }, function(e) { record('error', e); });
-            } else {
-                record('ok', p);
-            }
-            return p;
-        };
-        wrapped.__mcpIpcWrapped = true;
-        t.invoke = wrapped;
-        return true;
-    }
-
-    // __TAURI_INTERNALS__ may not exist yet at page-load-start; retry until
-    // it appears (same strategy as the pending-log flusher above).
-    if (!wrapInvoke()) {
-        var ipcWrapTimer = setInterval(function() {
-            if (wrapInvoke()) clearInterval(ipcWrapTimer);
-        }, 250);
-    }
+    // NOTE: Passive capture of frontend invoke() traffic is NOT possible in
+    // Tauri v2 — `window.__TAURI_INTERNALS__.invoke` is defined non-writable
+    // and non-configurable (a deliberate security lock), so it cannot be
+    // wrapped from an injected script. The manage_ipc tool therefore records
+    // only the IPC it mediates itself (agent-issued invokes and emitted /
+    // received events), done Rust-side in tools/manage_ipc.rs.
 
     // ---- dialog stubs ----
     // window.alert/confirm/prompt are synchronous and block the webview's JS
