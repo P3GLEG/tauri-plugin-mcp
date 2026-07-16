@@ -25,7 +25,7 @@ tauri-plugin-mcp = { git = "https://github.com/P3GLEG/tauri-plugin-mcp" }
 
 ## Tools
 
-The MCP server exposes 14 high-level tools to AI agents:
+The MCP server exposes 15 high-level tools to AI agents:
 
 | Tool | Description |
 |------|-------------|
@@ -41,6 +41,7 @@ The MCP server exposes 14 high-level tools to AI agents:
 | **manage_window** | Window control (list/focus/minimize/maximize/close/position/size/fullscreen), zoom, devtools, and webview state management. |
 | **wait_for** | Waits for a condition: text appearing/disappearing, element visible/hidden/attached/detached. Useful after async content loads. |
 | **restart_app** | Restarts the Tauri application and waits for it to come back online. Force-kills a frozen app (IPC mode only). |
+| **manage_ipc** | Tauri IPC access: `invoke` any `#[tauri::command]` with JSON args through the app's real IPC path, inspect captured webview↔Rust invoke traffic (names, args/result previews, latency, error rates), emit Tauri events, and wait for a named event to fire. |
 | **query_logs** | Queries buffered app logs (Rust `log!()` output, webview `console.*` calls, and intercepted dialogs) with level/source/substring filters, pagination, and a summary mode. |
 | **log_mark** | Inserts begin/end markers into the log buffer so `query_logs` can return exactly the logs produced by an action. |
 

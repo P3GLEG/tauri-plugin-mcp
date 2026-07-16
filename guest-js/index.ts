@@ -56,6 +56,7 @@ if (typeof window !== 'undefined' && !(window as any).__TAURI_MCP_LISTENER_PATCH
 }
 
 import { emit } from '@tauri-apps/api/event'; // For emitting the response
+import { invoke } from '@tauri-apps/api/core'; // For manage_ipc invoke passthrough
 import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow'; // For window-specific listener
 
 // Track the unlisten functions for cleanup
@@ -75,6 +76,7 @@ let manageZoomUnlistenFunction: (() => void) | null = null;
 let typeIntoFocusedUnlistenFunction: (() => void) | null = null;
 let pressKeyUnlistenFunction: (() => void) | null = null;
 let setFileInputUnlistenFunction: (() => void) | null = null;
+let ipcInvokeUnlistenFunction: (() => void) | null = null;
 
 // ---- Correlation ID helpers ----
 // Extract the _correlationId from an event payload (injected by Rust's emit_and_wait).
@@ -152,6 +154,7 @@ export async function setupPluginListeners() {
     typeIntoFocusedUnlistenFunction = await currentWindow.listen('type-into-focused', handleTypeIntoFocusedRequest);
     pressKeyUnlistenFunction = await currentWindow.listen('press-key', handlePressKeyRequest);
     setFileInputUnlistenFunction = await currentWindow.listen('set-file-input', handleSetFileInputRequest);
+    ipcInvokeUnlistenFunction = await currentWindow.listen('ipc-invoke', handleIpcInvokeRequest);
 
     console.log('TAURI-PLUGIN-MCP: All event listeners are set up on the current window.');
 }
@@ -230,6 +233,10 @@ export async function cleanupPluginListeners() {
     if (setFileInputUnlistenFunction) {
         setFileInputUnlistenFunction();
         setFileInputUnlistenFunction = null;
+    }
+    if (ipcInvokeUnlistenFunction) {
+        ipcInvokeUnlistenFunction();
+        ipcInvokeUnlistenFunction = null;
     }
     console.log('TAURI-PLUGIN-MCP: All event listeners have been removed.');
 }
@@ -2627,6 +2634,79 @@ async function handleSetFileInputRequest(event: any) {
         await emitResponse('set-file-input-response', correlationId, JSON.stringify({
             success: false,
             error: error instanceof Error ? error.message : String(error)
+        })).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
+    }
+}
+
+// --- ipc_invoke handler (manage_ipc action=invoke) ---
+// Invokes a Tauri command through the webview's real IPC path, so the call
+// goes through the app's actual invoke pipeline (capability checks included)
+// and is captured by the invoke wrapper like any frontend-originated call.
+const MAX_IPC_RESULT_CHARS = 30000;
+
+async function handleIpcInvokeRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received ipc-invoke, payload:', event.payload);
+    const correlationId = getCorrelationId(event.payload);
+
+    // Dedup guard: invoking a command twice could double-apply a mutation
+    if (correlationId && _handledCorrelationIds.has(correlationId)) {
+        console.warn('TAURI-PLUGIN-MCP: Ignoring duplicate ipc-invoke for correlation ID:', correlationId);
+        return;
+    }
+    if (correlationId) {
+        _handledCorrelationIds.add(correlationId);
+        setTimeout(() => _handledCorrelationIds.delete(correlationId), 30000);
+    }
+
+    try {
+        const { command, args, timeoutMs = 10000 } = event.payload || {};
+        if (!command || typeof command !== 'string') {
+            throw new Error('command parameter is required');
+        }
+
+        const started = Date.now();
+        const result = await Promise.race([
+            invoke(command, (args && typeof args === 'object') ? args : {}),
+            new Promise((_, reject) => setTimeout(
+                () => reject(new Error(`invoke("${command}") timed out after ${timeoutMs}ms (the command may still be running)`)),
+                timeoutMs
+            )),
+        ]);
+
+        let serialized: string;
+        try {
+            serialized = result === undefined ? 'undefined'
+                : (typeof result === 'string' ? result : JSON.stringify(result));
+        } catch {
+            serialized = String(result);
+        }
+        let truncated = false;
+        if (serialized.length > MAX_IPC_RESULT_CHARS) {
+            serialized = serialized.slice(0, MAX_IPC_RESULT_CHARS);
+            truncated = true;
+        }
+
+        await emitResponse('ipc-invoke-response', correlationId, JSON.stringify({
+            success: true,
+            data: {
+                command,
+                result: serialized,
+                resultType: typeof result,
+                truncated: truncated || undefined,
+                durationMs: Date.now() - started,
+            }
+        }));
+    } catch (error) {
+        // Tauri command errors are often plain objects/strings, not Errors
+        let message: string;
+        if (error instanceof Error) message = error.message;
+        else if (typeof error === 'string') message = error;
+        else {
+            try { message = JSON.stringify(error); } catch { message = String(error); }
+        }
+        await emitResponse('ipc-invoke-response', correlationId, JSON.stringify({
+            success: false,
+            error: `invoke failed: ${message}`
         })).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
     }
 }

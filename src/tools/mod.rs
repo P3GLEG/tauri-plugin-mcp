@@ -17,7 +17,9 @@ pub mod local_storage;
 pub mod mouse_movement;
 pub mod navigate_webview;
 pub mod log_mark;
+pub mod manage_ipc;
 pub mod ping;
+pub mod push_ipc;
 pub mod push_log;
 pub mod query_logs;
 pub mod restart_app;
@@ -40,6 +42,7 @@ pub use local_storage::handle_get_local_storage;
 pub use mouse_movement::handle_simulate_mouse_movement;
 pub use navigate_webview::handle_navigate_webview;
 pub use log_mark::handle_log_mark;
+pub use manage_ipc::handle_manage_ipc;
 pub use ping::handle_ping;
 pub use query_logs::handle_query_logs;
 pub use restart_app::handle_restart_app;
@@ -100,6 +103,7 @@ pub async fn handle_command<R: Runtime>(
         commands::TYPE_INTO_FOCUSED => handle_type_into_focused(app, payload).await,
         commands::PRESS_KEY => handle_press_key(app, payload).await,
         commands::SET_FILE_INPUT => handle_set_file_input(app, payload).await,
+        commands::MANAGE_IPC => handle_manage_ipc(app, payload).await,
         commands::RESTART_APP => handle_restart_app(app, payload).await,
         commands::QUERY_LOGS => handle_query_logs(app, payload).await,
         commands::LOG_MARK => handle_log_mark(app, payload).await,
@@ -179,6 +183,7 @@ mod tests {
             commands::TYPE_INTO_FOCUSED,
             commands::PRESS_KEY,
             commands::SET_FILE_INPUT,
+            commands::MANAGE_IPC,
             commands::RESTART_APP,
             commands::QUERY_LOGS,
             commands::LOG_MARK,
@@ -188,6 +193,6 @@ mod tests {
         for cmd in &all_commands {
             assert!(seen.insert(*cmd), "Duplicate command constant: {}", cmd);
         }
-        assert_eq!(seen.len(), 30, "Expected 30 unique commands");
+        assert_eq!(seen.len(), 31, "Expected 31 unique commands");
     }
 }

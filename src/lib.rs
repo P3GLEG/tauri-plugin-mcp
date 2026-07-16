@@ -10,6 +10,7 @@ pub use models::*;
 mod desktop;
 
 mod error;
+pub mod ipc_buffer;
 pub mod log_buffer;
 mod models;
 pub mod shared;
@@ -104,6 +105,10 @@ pub struct PluginConfig {
     /// Native dialogs block the webview's JS thread and would deadlock
     /// every MCP tool that round-trips through JS.
     pub stub_dialogs: bool,
+    /// Command names the app wants the `manage_ipc` tool to report as
+    /// available (Tauri has no runtime registry of `#[tauri::command]`
+    /// handlers, so discovery is otherwise limited to observed traffic).
+    pub exposed_commands: Vec<String>,
 }
 
 impl Default for PluginConfig {
@@ -127,7 +132,20 @@ impl PluginConfig {
             allow_release_builds: false,
             capture_rust_logs: false,
             stub_dialogs: true,
+            exposed_commands: Vec::new(),
         }
+    }
+
+    /// Declare the app's `#[tauri::command]` names so AI agents can
+    /// discover them via `manage_ipc(action="commands")` without having
+    /// to observe frontend traffic first.
+    pub fn expose_commands<I, S>(mut self, commands: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.exposed_commands = commands.into_iter().map(Into::into).collect();
+        self
     }
 
     /// Disable the `window.alert`/`confirm`/`prompt` stubs. Only do this if
@@ -358,9 +376,13 @@ pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
     }
 
     let stub_dialogs = config.stub_dialogs;
+    ipc_buffer::set_exposed_commands(config.exposed_commands.clone());
 
     Builder::new("mcp")
-        .invoke_handler(tauri::generate_handler![tools::push_log::push_log])
+        .invoke_handler(tauri::generate_handler![
+            tools::push_log::push_log,
+            tools::push_ipc::push_ipc
+        ])
         .on_page_load(move |webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 if !stub_dialogs {

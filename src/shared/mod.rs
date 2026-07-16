@@ -144,6 +144,7 @@ pub mod commands {
     pub const TYPE_INTO_FOCUSED: &str = "type_into_focused";
     pub const PRESS_KEY: &str = "press_key";
     pub const SET_FILE_INPUT: &str = "set_file_input";
+    pub const MANAGE_IPC: &str = "manage_ipc";
     pub const RESTART_APP: &str = "restart_app";
     pub const QUERY_LOGS: &str = "query_logs";
     pub const LOG_MARK: &str = "log_mark";

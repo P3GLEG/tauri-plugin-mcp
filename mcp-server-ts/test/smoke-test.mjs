@@ -14,7 +14,7 @@ import { once } from "node:events";
 
 // ── Expectations ──────────────────────────────────────────────────────
 
-const EXPECTED_TOOL_COUNT = 14;
+const EXPECTED_TOOL_COUNT = 15;
 
 const EXPECTED_TOOLS = [
   "take_screenshot",
@@ -31,6 +31,7 @@ const EXPECTED_TOOLS = [
   "restart_app",
   "query_logs",
   "log_mark",
+  "manage_ipc",
 ];
 
 // Tools whose selector_type enum MUST include "ref"
@@ -72,6 +73,14 @@ const SCHEMA_CHECKS = {
     params: [
       "key", "modifiers", "repeat",
       "selector_type", "selector_value", "window_label",
+    ],
+    annotations: { destructiveHint: true },
+  },
+  manage_ipc: {
+    params: [
+      "action", "command", "args", "event", "payload", "kind",
+      "name_contains", "status", "since_id", "limit", "timeout_ms",
+      "window_label",
     ],
     annotations: { destructiveHint: true },
   },
