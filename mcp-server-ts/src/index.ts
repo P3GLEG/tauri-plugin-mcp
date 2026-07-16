@@ -34,6 +34,17 @@ async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("Tauri MCP Server running on stdio");
+
+    // Exit when the MCP client goes away — otherwise every closed session
+    // leaves an orphaned node process behind.
+    transport.onclose = () => {
+      console.error("MCP client disconnected (transport closed) — exiting");
+      process.exit(0);
+    };
+    process.stdin.on("end", () => {
+      console.error("stdin closed — exiting");
+      process.exit(0);
+    });
   } catch (error) {
     console.error("Fatal error in main():", error);
     process.exit(1);

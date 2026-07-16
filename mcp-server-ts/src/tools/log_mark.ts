@@ -28,8 +28,17 @@ export function registerLogMarkTool(server: McpServer) {
 
         const result = await socketClient.sendCommand("log_mark", payload);
         const entryId = result && typeof result === "object" ? (result as any).entryId : undefined;
+        const markerCount = result && typeof result === "object" ? (result as any).markerCount : undefined;
+        const idSuffix = entryId != null ? ` (entry id ${entryId})` : "";
+        // An even marker count means this call closed a begin/end pair.
+        if (typeof markerCount === "number" && markerCount >= 2 && markerCount % 2 === 0) {
+          return createSuccessResponse(
+            `Marker '${id}' inserted${idSuffix} — bracket closed. ` +
+              `Call query_logs({ between: '${id}' }) to see exactly what happened between the markers.`,
+          );
+        }
         return createSuccessResponse(
-          `Marker '${id}' inserted${entryId != null ? ` (entry id ${entryId})` : ""}. ` +
+          `Marker '${id}' inserted${idSuffix}. ` +
             `Perform your action, then call log_mark again with id='${id}' to close the bracket, ` +
             `then query_logs({ between: '${id}' }) to see exactly what happened.`,
         );

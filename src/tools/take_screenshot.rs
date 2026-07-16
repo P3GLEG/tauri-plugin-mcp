@@ -3,7 +3,7 @@ use crate::shared::ScreenshotParams;
 use base64::Engine;
 use image::DynamicImage;
 use serde_json::Value;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use log::info;
 use crate::TauriMcpExt;
 use crate::models::ScreenshotRequest;
@@ -279,12 +279,34 @@ pub async fn handle_take_screenshot<R: Runtime>(
         }
     }
 
+    // A hidden window still captures — but as a blank frame. Detect it up
+    // front so the response can warn instead of silently returning a blank
+    // image the agent might misread as "the app rendered nothing".
+    let window_label = payload.window_label.clone();
+    let window_visible = app
+        .webview_windows()
+        .get(&window_label)
+        .and_then(|w| w.is_visible().ok());
+
     // Call the async method
     let result = app.tauri_mcp().take_screenshot_async(payload).await;
     match result {
         Ok(response) => {
-            let data = serde_json::to_value(response)
+            let mut data = serde_json::to_value(response)
                 .map_err(|e| Error::Anyhow(format!("Failed to serialize response: {}", e)))?;
+            if window_visible == Some(false) {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("windowVisible".into(), serde_json::json!(false));
+                    obj.insert(
+                        "warning".into(),
+                        serde_json::json!(format!(
+                            "Window '{}' is not visible — the capture is likely blank. \
+                             Show it first with manage_window(action='show', window_label='{}').",
+                            window_label, window_label
+                        )),
+                    );
+                }
+            }
             Ok(SocketResponse::ok(None, Some(data)))
         }
         Err(e) => Ok(SocketResponse::err(None, e.to_string())),

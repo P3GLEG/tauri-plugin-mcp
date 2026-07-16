@@ -29,10 +29,11 @@ pub async fn handle_manage_ipc<R: Runtime>(
         }
         "emit" => handle_emit(app, &payload),
         "wait_event" => handle_wait_event(app, &payload).await,
+        "arm_event" => handle_arm_event(app, &payload),
         other => Ok(SocketResponse::err(
             None,
             format!(
-                "Unknown manage_ipc action: {}. Valid: invoke, captured, commands, clear, emit, wait_event",
+                "Unknown manage_ipc action: {}. Valid: invoke, captured, commands, clear, emit, wait_event, arm_event",
                 other
             ),
         )),
@@ -209,6 +210,60 @@ fn handle_emit<R: Runtime>(
             format!("Failed to emit event '{}': {}", event, e),
         )),
     }
+}
+
+/// Arm a background listener for a named event BEFORE performing an action.
+/// MCP tool calls run sequentially, so `wait_event` can't observe an event
+/// caused by a later tool call — instead: arm_event → act (click/invoke/...)
+/// → check `captured` (kind=event, status=received). Every occurrence while
+/// armed is recorded into the IPC buffer; the listener auto-disarms after
+/// `timeout_ms` (default 60s, max 5min).
+fn handle_arm_event<R: Runtime>(
+    app: &AppHandle<R>,
+    payload: &Value,
+) -> Result<SocketResponse, crate::error::Error> {
+    let event = match payload.get("event").and_then(|v| v.as_str()) {
+        Some(e) if !e.is_empty() => e.to_string(),
+        _ => {
+            return Ok(SocketResponse::err(
+                None,
+                "'event' is required for action=arm_event".to_string(),
+            ));
+        }
+    };
+    let duration_ms = payload
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(60_000)
+        .min(300_000);
+
+    let event_name = event.clone();
+    // listen_any catches both app-wide and window-targeted emissions.
+    let listener_id = app.listen_any(event.clone(), move |ev| {
+        ipc_buffer::global().push(
+            "event",
+            event_name.clone(),
+            "received",
+            None,
+            None,
+            Some(ev.payload().to_string()),
+            None,
+        );
+    });
+
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(duration_ms)).await;
+        app_handle.unlisten(listener_id);
+    });
+
+    Ok(SocketResponse::ok(
+        None,
+        Some(json!({
+            "armed": event,
+            "duration_ms": duration_ms,
+        })),
+    ))
 }
 
 /// Wait (once) for a named Tauri event to fire anywhere in the app —

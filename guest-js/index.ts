@@ -258,7 +258,9 @@ async function handleGetElementPositionRequest(event: any) {
                 const refNum = parseInt(selectorValue, 10);
                 element = getElementByRef(refNum);
                 if (!element) {
-                    debugInfo.push(`No element found with ref=${refNum}. Call get_page_map first to populate refs.`);
+                    debugInfo.push(isRefDetached(refNum)
+                        ? `Element ref=${refNum} is no longer attached to the DOM (the page changed since the map was taken). Re-run query_page(mode='map') to get fresh refs.`
+                        : `No element found with ref=${refNum}. Refs are renumbered on every query_page(mode='map') call — run it first to populate refs.`);
                 }
                 break;
             case 'id':
@@ -333,7 +335,16 @@ async function handleGetElementPositionRequest(event: any) {
         
         // Get element position
         const rect = element.getBoundingClientRect();
-        console.log('TAURI-PLUGIN-MCP: Element rect:', { 
+        // A 0x0 rect means the element is hidden (display:none) or otherwise
+        // unrenderable — its "center" would be garbage coordinates.
+        if (rect.width === 0 && rect.height === 0) {
+            throw new Error(
+                `Element with ${selectorType}="${selectorValue}" was found but has a zero-size ` +
+                `bounding box (likely hidden via display:none or not rendered). ` +
+                `Refusing to return coordinates that cannot be clicked.`
+            );
+        }
+        console.log('TAURI-PLUGIN-MCP: Element rect:', {
             left: rect.left, 
             top: rect.top, 
             right: rect.right, 
@@ -1151,6 +1162,15 @@ function getPageMap(options?: PageMapOptions): PageMapResult {
             const el = document.querySelector(sel);
             if (el) roots.push(el);
         }
+        // A requested scope that matches nothing must fail loudly — silently
+        // scanning the whole page would return results labeled with a scope
+        // that was never applied.
+        if (roots.length === 0) {
+            throw new Error(
+                `scope_selector matched no elements: ${selectors.join(', ')}. ` +
+                `Nothing was scanned — fix the selector, or omit scope_selector to scan the whole page.`
+            );
+        }
     }
     if (roots.length === 0) {
         roots.push(document.body || document.documentElement);
@@ -1289,9 +1309,21 @@ function getPageMap(options?: PageMapOptions): PageMapResult {
     return result;
 }
 
-// Export the ref map lookup for use by other handlers
+// Export the ref map lookup for use by other handlers.
+// Detached elements (removed from the DOM since the map was built) are
+// treated as not found: their bounding rect is 0x0 at (0,0), so returning
+// them would hand callers garbage coordinates.
 function getElementByRef(ref: number): Element | null {
-    return _pageMapRefElements.get(ref) || null;
+    const el = _pageMapRefElements.get(ref) || null;
+    if (el && !el.isConnected) return null;
+    return el;
+}
+
+// Whether a ref was known but its element has since left the DOM — lets
+// error messages distinguish "stale ref" from "never existed".
+function isRefDetached(ref: number): boolean {
+    const el = _pageMapRefElements.get(ref);
+    return !!el && !el.isConnected;
 }
 
 async function handleLocalStorageRequest(event: any) {
@@ -1300,42 +1332,14 @@ async function handleLocalStorageRequest(event: any) {
 
     try {
         const { action, key, value } = event.payload;
-        
-        // Convert values that might be JSON strings to their actual values
-        let processedKey = key;
-        let processedValue = value;
-        
-        // If key is a JSON string, try to parse it
-        if (typeof key === 'string') {
-            try {
-                if (key.trim().startsWith('{') || key.trim().startsWith('[')) {
-                    processedKey = JSON.parse(key);
-                }
-            } catch (e) {
-                // Keep original if parsing fails
-                console.log('TAURI-PLUGIN-MCP: Key not valid JSON, using as string');
-            }
-        }
-        
-        // If value is a JSON string, try to parse it
-        if (typeof value === 'string') {
-            try {
-                if (value.trim().startsWith('{') || value.trim().startsWith('[')) {
-                    processedValue = JSON.parse(value);
-                }
-            } catch (e) {
-                // Keep original if parsing fails
-                console.log('TAURI-PLUGIN-MCP: Value not valid JSON, using as string');
-            }
-        }
-        
-        console.log('TAURI-PLUGIN-MCP: Processing localStorage operation', { 
-            action, 
-            processedKey, 
-            processedValue 
-        });
-        
-        const result = performLocalStorageOperation(action, processedKey, processedValue);
+
+        // Keys and values are stored verbatim: localStorage values are
+        // strings, and callers routinely store JSON text. Parsing a
+        // JSON-looking value here and re-stringifying it later corrupts it
+        // to "[object Object]".
+        console.log('TAURI-PLUGIN-MCP: Processing localStorage operation', { action, key });
+
+        const result = performLocalStorageOperation(action, key, value);
         await emitResponse('get-local-storage-response', correlationId, result);
         console.log('TAURI-PLUGIN-MCP: Emitted get-local-storage-response');
     } catch (error) {
@@ -1392,10 +1396,10 @@ function performLocalStorageOperation(action: string, key?: string | any, value?
             
             const keyStr = String(key);
             const valueStr = String(value);
-            console.log(`TAURI-PLUGIN-MCP: Setting localStorage item: ${keyStr} = ${valueStr}`);
-            
+            console.log(`TAURI-PLUGIN-MCP: Setting localStorage item: ${keyStr}`);
+
             localStorage.setItem(keyStr, valueStr);
-            return { success: true };
+            return { success: true, data: { action: 'set', key: keyStr, length: valueStr.length } };
         case 'remove':
             if (!key) {
                 console.log('TAURI-PLUGIN-MCP: Remove operation failed - no key provided');
@@ -1403,11 +1407,11 @@ function performLocalStorageOperation(action: string, key?: string | any, value?
             }
             console.log(`TAURI-PLUGIN-MCP: Removing localStorage item with key: ${key}`);
             localStorage.removeItem(String(key));
-            return { success: true };
+            return { success: true, data: { action: 'remove', key: String(key) } };
         case 'clear':
             console.log('TAURI-PLUGIN-MCP: Clearing all localStorage items');
             localStorage.clear();
-            return { success: true };
+            return { success: true, data: { action: 'clear' } };
         case 'keys':
             console.log('TAURI-PLUGIN-MCP: Getting all localStorage keys');
             return {
@@ -1431,13 +1435,18 @@ async function handleJsExecutionRequest(event: any) {
             ? event.payload._payload
             : event.payload;
 
-        // Execute the code
-        const result = executeJavaScript(code);
+        // Execute the code; await thenables so promise results come back
+        // resolved instead of serializing a pending Promise as "{}".
+        let result = executeJavaScript(code);
+        if (result !== null && (typeof result === 'object' || typeof result === 'function')
+            && typeof (result as any).then === 'function') {
+            result = await result;
+        }
 
         // Prepare response with result and type information
         const response = {
-            result: typeof result === 'object' ? JSON.stringify(result) : String(result),
-            type: typeof result
+            result: stringifyJsResult(result),
+            type: result === null ? 'null' : typeof result
         };
 
         // Send back the result
@@ -1457,15 +1466,34 @@ async function handleJsExecutionRequest(event: any) {
     }
 }
 
-// Function to safely execute JavaScript code
+// Stringify an execute_js result without double-encoding surprises:
+// objects become JSON (or a best-effort string for circular structures),
+// everything else becomes its natural string form.
+function stringifyJsResult(result: any): string {
+    if (result === undefined) return 'undefined';
+    if (result === null) return 'null';
+    if (typeof result === 'object') {
+        try {
+            return JSON.stringify(result);
+        } catch {
+            // Circular or otherwise non-serializable structure
+            return String(result);
+        }
+    }
+    return String(result);
+}
+
+// Function to execute JavaScript code with eval completion-value semantics:
+// multi-statement code returns the value of its final expression
+// (e.g. `doSetup(); 'done'` returns 'done'), matching what the tool promises.
 function executeJavaScript(code: string): any {
-    // Using Function constructor is slightly safer than eval
-    // It runs in global scope rather than local scope
     try {
-        // For expressions, return the result
-        return new Function(`return (${code})`)();
-    } catch {
-        // If that fails, try executing as statements
+        // Indirect eval: runs in global scope and returns the completion value.
+        return (0, eval)(code);
+    } catch (e) {
+        // Re-throw runtime errors; only fall back for syntax errors so code
+        // using top-level `return` still works via the Function wrapper.
+        if (!(e instanceof SyntaxError)) throw e;
         return new Function(code)();
     }
 }
@@ -1497,7 +1525,9 @@ async function handleSendTextToElementRequest(event: any) {
                 const refNum = parseInt(selectorValue, 10);
                 element = getElementByRef(refNum);
                 if (!element) {
-                    debugInfo.push(`No element found with ref=${refNum}. Call get_page_map first to populate refs.`);
+                    debugInfo.push(isRefDetached(refNum)
+                        ? `Element ref=${refNum} is no longer attached to the DOM (the page changed since the map was taken). Re-run query_page(mode='map') to get fresh refs.`
+                        : `No element found with ref=${refNum}. Refs are renumbered on every query_page(mode='map') call — run it first to populate refs.`);
                 }
                 break;
             case 'id':
@@ -2052,7 +2082,7 @@ async function handleScrollPageRequest(event: any) {
         } else if (typeof toRef === 'number') {
             const el = getElementByRef(toRef);
             if (!el) {
-                throw new Error(`No element found with ref=${toRef}. Call get_page_map first.`);
+                throw new Error(`No element found with ref=${toRef}. Refs are renumbered on every query_page(mode='map') call — run it first.`);
             }
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else {
@@ -2075,12 +2105,30 @@ async function handleScrollPageRequest(event: any) {
         // Wait for smooth scroll to settle
         await new Promise(resolve => setTimeout(resolve, 350));
 
+        // For to_ref, report whether the element actually ended up in the
+        // viewport — page-level scrollPosition says nothing when the scroll
+        // happened inside a nested container.
+        let target: Record<string, unknown> | undefined;
+        if (typeof toRef === 'number') {
+            const el = getElementByRef(toRef);
+            if (el) {
+                const r = el.getBoundingClientRect();
+                target = {
+                    ref: toRef,
+                    inViewport: r.bottom > 0 && r.right > 0
+                        && r.top < window.innerHeight && r.left < window.innerWidth,
+                    rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+                };
+            }
+        }
+
         await emitResponse('scroll-page-response', correlationId, JSON.stringify({
             success: true,
             data: {
                 scrollPosition: { x: window.scrollX, y: window.scrollY },
                 pageHeight: document.documentElement.scrollHeight,
-                viewport: { width: window.innerWidth, height: window.innerHeight }
+                viewport: { width: window.innerWidth, height: window.innerHeight },
+                ...(target ? { target } : {})
             }
         }));
     } catch (error) {

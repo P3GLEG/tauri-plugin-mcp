@@ -53,19 +53,19 @@ function formatCommandStats(data: any): string {
 export function registerManageIpcTool(server: McpServer) {
   server.tool(
     "manage_ipc",
-    "Tauri IPC layer access — invoke backend commands and drive/observe events. Actions: 'invoke' calls a #[tauri::command] with JSON args through the app's real IPC path and returns the result (great for bisecting bugs into frontend vs Rust). 'emit' fires a Tauri event into the app. 'wait_event' blocks until a named event fires (assert 'saving emits user-updated'). 'captured' lists the IPC this tool has mediated — invokes you issued plus emitted/received events — with name/status/duration filters. 'commands' aggregates per-command stats over those invokes plus any commands the app declared via PluginConfig::expose_commands. 'clear' empties the buffer. NOTE: passive capture of organic frontend invoke() traffic is NOT possible — Tauri v2 freezes its invoke function — so 'captured'/'commands' only reflect IPC driven through this tool.",
+    "Tauri IPC layer access — invoke backend commands and drive/observe events. Actions: 'invoke' calls a #[tauri::command] with JSON args through the app's real IPC path and returns the result (great for bisecting bugs into frontend vs Rust). 'emit' fires a Tauri event into the app. 'arm_event' registers a background listener BEFORE you act — tool calls run sequentially, so to assert 'clicking Save emits user-updated': arm_event → click → captured (kind=event) shows whether it fired; the listener auto-disarms after timeout_ms (default 60s). 'wait_event' blocks until a named event fires — only useful for events that recur on their own, since you cannot trigger anything while it blocks. 'captured' lists the IPC this tool has mediated — invokes you issued plus emitted/received events — with name/status/duration filters. 'commands' aggregates per-command stats over those invokes plus any commands the app declared via PluginConfig::expose_commands. 'clear' empties the buffer. NOTE: passive capture of organic frontend invoke() traffic is NOT possible — Tauri v2 freezes its invoke function — so 'captured'/'commands' only reflect IPC driven through this tool.",
     {
-      action: z.enum(["invoke", "captured", "commands", "clear", "emit", "wait_event"]).describe("IPC operation to perform."),
+      action: z.enum(["invoke", "captured", "commands", "clear", "emit", "wait_event", "arm_event"]).describe("IPC operation to perform."),
       command: z.string().optional().describe("(invoke) Command name, e.g. 'get_user' or 'plugin:dialog|open'."),
       args: z.record(z.unknown()).optional().describe("(invoke) Arguments object passed to the command. Keys should match the command's parameter names (camelCase as the frontend would send them)."),
-      event: z.string().optional().describe("(emit/wait_event) Event name."),
+      event: z.string().optional().describe("(emit/wait_event/arm_event) Event name."),
       payload: z.unknown().optional().describe("(emit) JSON payload for the emitted event."),
       kind: z.enum(["invoke", "event"]).optional().describe("(captured) Filter by entry kind."),
       name_contains: z.string().optional().describe("(captured) Case-insensitive substring filter on command/event name."),
       status: z.enum(["ok", "error", "emitted", "received"]).optional().describe("(captured) Filter by outcome. Tip: status='error' shows only failed invokes."),
       since_id: z.number().int().optional().describe("(captured) Only entries with id greater than this — use the last seen id as a cursor."),
       limit: z.number().int().min(1).max(500).default(50).describe("(captured) Max entries to return (newest kept). Default 50."),
-      timeout_ms: z.number().int().positive().optional().describe("(invoke/wait_event) Timeout in ms. Default 10000."),
+      timeout_ms: z.number().int().positive().optional().describe("(invoke/wait_event) Timeout in ms, default 10000. (arm_event) How long the listener stays armed, default 60000, max 300000."),
       window_label: z.string().default("main").describe("Target window for invoke (and emit, when set). Defaults to 'main'."),
     },
     {
@@ -80,7 +80,7 @@ export function registerManageIpcTool(server: McpServer) {
         if (params.action === "invoke" && !params.command) {
           return createErrorResponse("'command' is required for action=invoke");
         }
-        if ((params.action === "emit" || params.action === "wait_event") && !params.event) {
+        if ((params.action === "emit" || params.action === "wait_event" || params.action === "arm_event") && !params.event) {
           return createErrorResponse(`'event' is required for action=${params.action}`);
         }
 
@@ -122,6 +122,11 @@ export function registerManageIpcTool(server: McpServer) {
             return createSuccessResponse(`Cleared ${data.cleared ?? 0} captured IPC entries`);
           case "emit":
             return createSuccessResponse(`Emitted event '${params.event}'${params.window_label ? ` to window '${params.window_label}'` : ""}`);
+          case "arm_event":
+            return createSuccessResponse(
+              `Armed listener for '${params.event}' (${data.duration_ms}ms). ` +
+                `Now perform the action that should emit it, then call manage_ipc(action='captured', kind='event', name_contains='${params.event}') to see whether it fired.`,
+            );
           case "wait_event":
             if (data.received === false) {
               return createSuccessResponse(`Event '${params.event}' did NOT fire within ${data.timed_out_after_ms}ms`);

@@ -28,8 +28,10 @@ function findSocketOwnerPid(socketPath: string): number | undefined {
 
 /**
  * Force-kill the Tauri app process when the graceful restart command can't
- * reach it (app is frozen/unresponsive). In dev mode, `cargo tauri dev`
- * will automatically relaunch the app after the process exits.
+ * reach it (app is frozen/unresponsive). Note: nothing relaunches the app
+ * after a kill — this is a last resort for a frozen process, and the
+ * reconnect wait below only succeeds if something else (e.g. a supervisor)
+ * brings the app back.
  */
 function forceKillApp(socketPath: string): boolean {
   const pid = findSocketOwnerPid(socketPath);
@@ -63,7 +65,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export function registerRestartAppTool(server: McpServer) {
   server.tool(
     "restart_app",
-    "Restarts the Tauri application and waits for it to come back online. Use when the app is in a broken state, unresponsive, or needs a fresh start. If the app is completely frozen, it will be force-killed. This is a destructive operation — all in-memory state will be lost.",
+    "Restarts the Tauri application and waits for it to come back online. Use when the app is in a broken state, unresponsive, or needs a fresh start. If the app is completely frozen, it will be force-killed. This is a destructive operation — all in-memory state will be lost. NOT available in dev mode (`tauri dev`): the app will refuse and suggest asking the user to restart the dev command; use navigate(action='reload') to reload the frontend instead.",
     {
       delay_ms: z.number().int().min(100).max(5000).optional()
         .describe("Delay in milliseconds before the app restarts (default 500). Allows in-flight operations to complete."),
@@ -95,8 +97,20 @@ export function registerRestartAppTool(server: McpServer) {
           );
           console.error('Restart command acknowledged. Waiting for app to come back...');
         } catch (gracefulError) {
-          // Graceful restart failed — app is likely frozen. Force kill it.
-          console.error(`Graceful restart failed: ${(gracefulError as Error).message}`);
+          const gracefulMessage = (gracefulError as Error).message;
+          console.error(`Graceful restart failed: ${gracefulMessage}`);
+
+          // Only treat the app as frozen when the command could not be
+          // delivered (timeout / connection failure). An explicit error
+          // response means the app is alive and REFUSING (e.g. dev-mode
+          // restart is unsupported) — surface it instead of killing a
+          // healthy process.
+          const undeliverable = gracefulMessage.includes('timed out')
+            || gracefulMessage.includes('Failed to connect')
+            || gracefulMessage.includes('Failed to send request');
+          if (!undeliverable) {
+            return createErrorResponse(`Restart refused by the app: ${gracefulMessage}`);
+          }
 
           if (isTcp) {
             // Force-kill discovers the app PID via the Unix socket file, which
@@ -122,7 +136,7 @@ export function registerRestartAppTool(server: McpServer) {
           console.error('Force kill sent. Waiting for app to restart...');
         }
 
-        // Wait for reconnection (dev mode auto-relaunches after process exit)
+        // Wait for the restarted process's socket server to come back
         try {
           await socketClient.waitForReconnect(30, 2000);
         } catch (reconnectError) {

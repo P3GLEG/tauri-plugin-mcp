@@ -56,6 +56,8 @@ export function registerTakeScreenshotTool(server: McpServer) {
 
         const base64Data = extractBase64Data(result);
         const filePath = extractFilePath(result);
+        const visibilityWarning: string | undefined =
+          result && typeof result === 'object' ? (result as any).warning : undefined;
 
         // Determine audience annotations
         const annotations = audience === "user"
@@ -80,20 +82,28 @@ export function registerTakeScreenshotTool(server: McpServer) {
           content.push(createEmbeddedResourceResponse(filePath).content[0]);
           // Text reference
           content.push({ type: "text" as const, text: `Full screenshot saved to: ${filePath}` });
+          if (visibilityWarning) content.push({ type: "text" as const, text: `WARNING: ${visibilityWarning}` });
           return { isError: false, content };
         }
 
         // File-only mode: no inline data, just file path
         if (!base64Data && filePath) {
-          return createEmbeddedResourceResponse(filePath);
+          const response = createEmbeddedResourceResponse(filePath);
+          if (visibilityWarning) {
+            (response.content as any[]).push({ type: "text" as const, text: `WARNING: ${visibilityWarning}` });
+          }
+          return response;
         }
 
         // Inline mode: base64 data, no file
         if (base64Data) {
-          if (annotations) {
-            return createAnnotatedImageResponse(base64Data, 'image/jpeg', annotations);
+          const response = annotations
+            ? createAnnotatedImageResponse(base64Data, 'image/jpeg', annotations)
+            : createImageResponse(base64Data, 'image/jpeg');
+          if (visibilityWarning) {
+            (response.content as any[]).push({ type: "text" as const, text: `WARNING: ${visibilityWarning}` });
           }
-          return createImageResponse(base64Data, 'image/jpeg');
+          return response;
         }
 
         console.error('Failed to extract base64 data from response:', JSON.stringify(result));

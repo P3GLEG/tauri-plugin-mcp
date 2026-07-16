@@ -58,6 +58,11 @@ pub struct LogEntry {
     /// occurrence; the latest is `ts + (repeat-1) * COALESCE_WINDOW_MS` max.
     #[serde(skip_serializing_if = "is_one", default = "default_repeat")]
     pub repeat: u32,
+    /// True when the entry is this plugin's own instrumentation (socket
+    /// command tracing, JS bridge logs). Hidden from queries by default so
+    /// the app's own logs aren't buried under MCP plumbing.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub plugin: bool,
     /// Timestamp (ms since epoch) of the first occurrence in this entry's
     /// coalesce run. Internal bookkeeping for capping run length; not
     /// serialized.
@@ -70,6 +75,18 @@ fn is_one(n: &u32) -> bool {
 }
 fn default_repeat() -> u32 {
     1
+}
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Detect the plugin's own instrumentation: Rust logs from this crate's
+/// modules (all prefixed "[TAURI_MCP]") and the JS bridge's console output
+/// (prefixed "TAURI-PLUGIN-MCP").
+fn is_plugin_chatter(target: Option<&str>, message: &str) -> bool {
+    target.is_some_and(|t| t.starts_with("tauri_plugin_mcp"))
+        || message.contains("[TAURI_MCP]")
+        || message.contains("TAURI-PLUGIN-MCP")
 }
 
 pub struct LogBuffer {
@@ -118,6 +135,11 @@ impl LogBuffer {
         }
         m.push_back((id, tag.to_string()));
         id
+    }
+
+    /// Number of markers recorded with this tag (for begin/end pairing hints).
+    pub fn marker_count(&self, tag: &str) -> usize {
+        self.markers_lock().iter().filter(|(_, t)| t == tag).count()
     }
 
     /// Look up the (begin_id, end_id_or_now) bounds for a `between` query.
@@ -197,6 +219,8 @@ impl LogBuffer {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let plugin = !matches!(source, LogSource::Marker)
+            && is_plugin_chatter(target.as_deref(), &message);
         let entry = LogEntry {
             id,
             ts,
@@ -206,6 +230,7 @@ impl LogBuffer {
             message,
             repeat: 1,
             first_ts: ts,
+            plugin,
         };
 
         if guard.len() >= self.capacity {
@@ -249,6 +274,7 @@ impl LogBuffer {
         let level_filter = q.level.as_deref().and_then(parse_level_threshold);
         let lc_contains = q.contains.as_ref().map(|s| s.to_lowercase());
         let include_markers = q.include_markers.unwrap_or(false);
+        let include_plugin = q.include_plugin.unwrap_or(false);
 
         // If `between` was requested but no markers exist, return empty with
         // a hint in the diagnostics.
@@ -278,6 +304,10 @@ impl LogBuffer {
             .filter(|e| {
                 // Hide marker sentinels from regular output unless explicitly asked.
                 if !include_markers && matches!(e.source, LogSource::Marker) {
+                    return false;
+                }
+                // Hide the plugin's own instrumentation unless explicitly asked.
+                if !include_plugin && e.plugin {
                     return false;
                 }
                 if let Some(b) = between_lower {
@@ -351,7 +381,7 @@ impl LogBuffer {
 
 fn count_entries(entries: &VecDeque<LogEntry>) -> LogCounts {
     let (mut errors, mut warns, mut infos, mut debugs, mut traces) = (0u64, 0u64, 0u64, 0u64, 0u64);
-    let (mut rust_count, mut js_count, mut marker_count) = (0u64, 0u64, 0u64);
+    let (mut rust_count, mut js_count, mut marker_count, mut plugin_count) = (0u64, 0u64, 0u64, 0u64);
     for e in entries.iter() {
         match e.level.as_str() {
             "error" => errors += 1,
@@ -366,6 +396,9 @@ fn count_entries(entries: &VecDeque<LogEntry>) -> LogCounts {
             LogSource::Js => js_count += 1,
             LogSource::Marker => marker_count += 1,
         }
+        if e.plugin {
+            plugin_count += 1;
+        }
     }
     LogCounts {
         error: errors,
@@ -376,6 +409,7 @@ fn count_entries(entries: &VecDeque<LogEntry>) -> LogCounts {
         rust: rust_count,
         js: js_count,
         marker: marker_count,
+        plugin: plugin_count,
     }
 }
 
@@ -394,6 +428,8 @@ pub struct LogQuery {
     pub between: Option<String>,
     /// Include `LogSource::Marker` sentinel entries in the result. Default false.
     pub include_markers: Option<bool>,
+    /// Include the plugin's own instrumentation entries. Default false.
+    pub include_plugin: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -426,6 +462,8 @@ pub struct LogCounts {
     pub rust: u64,
     pub js: u64,
     pub marker: u64,
+    /// Plugin-internal entries in the buffer (hidden from queries by default).
+    pub plugin: u64,
 }
 
 fn parse_level(s: &str) -> Option<Level> {
@@ -664,6 +702,21 @@ mod tests {
         assert_eq!(r.entries.len(), 0);
         let r2 = buf.query(&LogQuery { include_markers: Some(true), ..Default::default() });
         assert_eq!(r2.entries.len(), 1);
+    }
+
+    #[test]
+    fn plugin_chatter_hidden_by_default() {
+        let buf = LogBuffer::new(50);
+        buf.push("info", LogSource::Rust, Some("tauri_plugin_mcp::socket_server".into()), "[TAURI_MCP] Received command: ping".into());
+        buf.push("trace", LogSource::Js, None, "localhost/ TAURI-PLUGIN-MCP: Received wait-for".into());
+        buf.push("info", LogSource::Js, None, "AutoSavePlugin: saved".into());
+        let r = buf.query(&LogQuery::default());
+        assert_eq!(r.entries.len(), 1);
+        assert_eq!(r.entries[0].message, "AutoSavePlugin: saved");
+        assert_eq!(r.counts.plugin, 2);
+
+        let r2 = buf.query(&LogQuery { include_plugin: Some(true), ..Default::default() });
+        assert_eq!(r2.entries.len(), 3);
     }
 
     #[test]

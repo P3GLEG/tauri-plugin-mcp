@@ -64,7 +64,7 @@ pub async fn handle_command<R: Runtime>(
     command: &str,
     payload: Value,
 ) -> crate::Result<SocketResponse> {
-    info!("[TAURI_MCP] Received command: {}", command);
+    debug!("[TAURI_MCP] Received command: {}", command);
     debug!(
         "[TAURI_MCP] Command {} payload: {}",
         command,
@@ -117,7 +117,7 @@ pub async fn handle_command<R: Runtime>(
         } else {
             "FAILURE"
         };
-        info!(
+        debug!(
             "[TAURI_MCP] Command {} completed with status: {}",
             command, success_str
         );

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Runtime};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use log::{info, warn, error, trace};
+use log::{debug, info, warn, error, trace};
 
 use serde::{Deserialize, Serialize};
 
@@ -546,10 +546,11 @@ where
                     );
                     return Ok(());
                 }
+                // Raw request lines carry the auth token — never log them
+                // above trace, and redact the token even there.
                 if log::log_enabled!(log::Level::Trace) {
-                    trace!("[TAURI_MCP] Read: {}", line.trim());
+                    trace!("[TAURI_MCP] Read: {}", redact_auth_token(line.trim()));
                 }
-                info!("[TAURI_MCP] Received command: {}", line.trim());
             }
             Err(e) => {
                 if is_disconnect_error(&e) {
@@ -615,7 +616,7 @@ where
             }
         }
 
-        info!("[TAURI_MCP] Processing command: {}", request.command);
+        debug!("[TAURI_MCP] Processing command: {}", request.command);
 
         let request_id = request.id.clone();
 
@@ -637,7 +638,7 @@ where
         let response_json = serde_json::to_string(&response)
             .map_err(|e| Error::Anyhow(format!("Failed to serialize response: {}", e)))?
             + "\n";
-        info!(
+        debug!(
             "[TAURI_MCP] Sending response: length = {} bytes",
             response_json.len()
         );
@@ -649,7 +650,23 @@ where
             return Err(e);
         }
 
-        info!("[TAURI_MCP] Response sent successfully");
+        debug!("[TAURI_MCP] Response sent successfully");
+    }
+}
+
+/// Redact the authToken value in a raw request line before logging it.
+fn redact_auth_token(line: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut() {
+                if obj.contains_key("authToken") {
+                    obj.insert("authToken".into(), serde_json::Value::String("<redacted>".into()));
+                }
+            }
+            v.to_string()
+        }
+        // Unparseable line — don't risk echoing a token fragment.
+        Err(_) => "<unparseable request line redacted>".to_string(),
     }
 }
 
