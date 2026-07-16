@@ -1,4 +1,4 @@
-use log::{info, warn};
+use log::{error, info, warn};
 use tauri::{
     Manager, Runtime,
     plugin::{Builder, TauriPlugin},
@@ -78,7 +78,20 @@ pub struct PluginConfig {
     pub default_webview_label: Option<String>,
     /// Optional auth token for socket server authentication.
     /// When set, clients must include this token in requests.
+    /// When `None` (and auth has not been disabled via [`PluginConfig::insecure_no_auth`]),
+    /// a random token is generated at init and written to the `.token`
+    /// sidecar file that the TypeScript MCP server auto-discovers.
     pub auth_token: Option<String>,
+    /// If true, run the socket server without any authentication.
+    /// Any process that can reach the socket gets full control of the app
+    /// (arbitrary JS, input injection, cookie access). Only set this via
+    /// [`PluginConfig::insecure_no_auth`] and only when you understand the risk.
+    pub disable_auth: bool,
+    /// Allow the socket server to start in release builds. Off by default:
+    /// this plugin is a development tool and refuses to expose its socket in
+    /// release builds unless the app explicitly opts in via
+    /// [`PluginConfig::allow_release_builds`].
+    pub allow_release_builds: bool,
     /// If true, install the ring-buffer adapter as the global `log` logger
     /// so Rust-side `log!()` output is captured for `query_logs`. Off by
     /// default because most apps already install a logger (e.g.
@@ -104,6 +117,8 @@ impl PluginConfig {
             start_socket_server: true,
             default_webview_label: None,
             auth_token: None,
+            disable_auth: false,
+            allow_release_builds: false,
             capture_rust_logs: false,
         }
     }
@@ -149,6 +164,25 @@ impl PluginConfig {
         self
     }
 
+    /// Run the socket server without authentication. By default a random
+    /// token is generated when none is configured; this opt-out exists for
+    /// setups where the client genuinely cannot read the `.token` sidecar
+    /// file. Any process that can reach the socket then gets full control
+    /// of the app (arbitrary JS, input injection, cookie access).
+    pub fn insecure_no_auth(mut self) -> Self {
+        self.disable_auth = true;
+        self
+    }
+
+    /// Allow the socket server to start in release builds. By default the
+    /// plugin refuses: the socket exposes arbitrary JS execution, native
+    /// input injection, and cookie access, and must not ship to end users
+    /// by accident. Only enable this for internal/dogfood builds.
+    pub fn allow_release_builds(mut self, allow: bool) -> Self {
+        self.allow_release_builds = allow;
+        self
+    }
+
     /// Convenience: configure TCP on localhost (127.0.0.1) with the given port.
     pub fn tcp_localhost(mut self, port: u16) -> Self {
         self.socket_type = SocketType::Tcp {
@@ -178,8 +212,34 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 /// - `TAURI_MCP_TCP_PORT` — when the socket type is TCP, overrides the
 ///   TCP port. Must parse as a `u16`; invalid values are ignored with a
 ///   warning.
+/// - `TAURI_MCP_AUTH_TOKEN` — overrides the configured auth token (the
+///   TypeScript MCP server reads the same variable).
+///
+/// # Release builds
+///
+/// The socket server exposes arbitrary JS execution, native input injection,
+/// and cookie access to local processes. In release builds
+/// (`cfg!(debug_assertions)` false) it therefore refuses to start unless the
+/// app opts in with [`PluginConfig::allow_release_builds`]. The rest of the
+/// plugin (log capture, guest bindings) still initializes so the app itself
+/// keeps working.
 pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
     let mut config = config;
+
+    // Safety gate: never expose the automation socket in a release build
+    // unless the app explicitly opted in. A forgotten cfg(debug_assertions)
+    // around plugin registration must not become a local backdoor for end
+    // users of the shipped app.
+    if !cfg!(debug_assertions) && config.start_socket_server && !config.allow_release_builds {
+        error!(
+            "[TAURI_MCP] Refusing to start the MCP socket server in a release build. \
+             This plugin grants any local process arbitrary JS execution, input \
+             injection, and cookie access — it is a development tool. If this is an \
+             internal build that genuinely needs it, opt in with \
+             PluginConfig::allow_release_builds(true)."
+        );
+        config.start_socket_server = false;
+    }
 
     // Environment overrides for multi-instance support. Env vars take
     // precedence over programmatic config.
@@ -240,8 +300,33 @@ pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
         }
     }
 
+    // Env override for the auth token (symmetric with the TS server, which
+    // reads the same variable).
+    if let Ok(token) = std::env::var("TAURI_MCP_AUTH_TOKEN") {
+        if !token.is_empty() {
+            info!("[TAURI_MCP] Using auth token from TAURI_MCP_AUTH_TOKEN env var");
+            config.auth_token = Some(token);
+        }
+    }
+
+    // Auth on by default: when no token is configured, generate a random one.
+    // It is written to the `<socket>.token` sidecar (0600 on Unix) which the
+    // TypeScript MCP server auto-discovers on connect, so the default setup
+    // stays zero-config while keeping other same-user processes out unless
+    // they can also read the token file.
     if config.auth_token.is_none() {
-        warn!("[TAURI_MCP] WARNING: No auth token configured. Socket server is unauthenticated.");
+        if config.disable_auth {
+            warn!(
+                "[TAURI_MCP] WARNING: Authentication explicitly disabled (insecure_no_auth). \
+                 Any process that can reach the socket has full control of this app."
+            );
+        } else {
+            config.auth_token = Some(uuid::Uuid::new_v4().simple().to_string());
+            info!(
+                "[TAURI_MCP] No auth token configured; generated a random token \
+                 (clients discover it via the .token sidecar file)"
+            );
+        }
     }
 
     if config.start_socket_server {

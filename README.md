@@ -61,13 +61,36 @@ Only include the MCP plugin in development builds:
             // .tcp_localhost(4000)
             // For multi-webview apps where the webview label differs from the window label
             // .default_webview_label("preview".to_string())
-            // Optional auth token for TCP connections
+            // Optional explicit auth token (IPC and TCP). If omitted, a random
+            // token is generated and written to a `.token` sidecar file that
+            // the MCP server discovers automatically — no wiring needed.
             // .auth_token("my-secret-token".to_string())
     ));
 }
 ```
 
-### 2. Configure your AI agent
+The `#[cfg(debug_assertions)]` guard keeps the plugin out of release binaries entirely. As a second line of defense, the plugin also refuses to start its socket server in release builds unless you explicitly opt in with `.allow_release_builds(true)`.
+
+### 2. Initialize the guest bindings
+
+The webview side of the plugin must be initialized by your frontend — tools like `execute_js`, `query_page`, `type_text`, `click` (selector mode), and `wait_for` depend on it. Without this step those tools fail with a timeout ("Timeout waiting for JS execution").
+
+```bash
+npm install tauri-plugin-mcp
+```
+
+```ts
+// In your app's entry point (e.g. main.ts / main.tsx)
+import { setupPluginListeners } from 'tauri-plugin-mcp';
+
+if (import.meta.env.DEV) {
+  setupPluginListeners();
+}
+```
+
+Like the Rust side, gate it to development builds.
+
+### 3. Configure your AI agent
 
 #### IPC Mode (default, recommended)
 
@@ -127,7 +150,7 @@ Make sure your Tauri app uses the same connection mode:
 
 ### Running multiple app instances
 
-The Rust plugin honors the `TAURI_MCP_IPC_PATH` environment variable (which overrides the configured IPC socket path) and `TAURI_MCP_TCP_PORT` for TCP mode. To drive several app instances side by side, launch each instance with its own socket path:
+The Rust plugin honors the `TAURI_MCP_IPC_PATH` environment variable (which overrides the configured IPC socket path), `TAURI_MCP_TCP_PORT` for TCP mode, and `TAURI_MCP_AUTH_TOKEN` (overrides the configured/auto-generated auth token; the TS server reads the same variable). To drive several app instances side by side, launch each instance with its own socket path:
 
 ```bash
 TAURI_MCP_IPC_PATH=/tmp/myapp-a.sock pnpm tauri dev
@@ -191,10 +214,24 @@ Your Application
 
 ### Security
 
-- Auth token support for TCP connections (constant-time comparison)
-- Token file written with `0o600` permissions, deleted on shutdown
-- Non-loopback TCP without auth token is rejected
-- Stale socket cleanup on startup
+> **⚠️ This is a development tool. Never ship it in production builds.**
+> Any process that can reach the socket gets effectively full control of your
+> app: arbitrary JavaScript in the app's origin (including access to session
+> data), cookie/localStorage reads, OS-level input injection (macOS), and
+> screenshots. Keep plugin registration behind `#[cfg(debug_assertions)]` and
+> the guest bindings behind a dev-mode check.
+
+Protections in place:
+
+- **Release-build refusal** — the socket server will not start in a release build unless the app opts in with `.allow_release_builds(true)`.
+- **Authentication on by default** — if no token is configured, a random one is generated at startup. It's written to a `.token` sidecar file next to the socket (`0o600` on Unix, deleted on shutdown), which the MCP server reads automatically — the default setup stays zero-config. Set an explicit token with `.auth_token(...)` or the `TAURI_MCP_AUTH_TOKEN` env var (both sides honor it). Opting out requires an explicit `.insecure_no_auth()`.
+- **Constant-time token comparison** to prevent timing side-channels.
+- **Unix socket permissions** — the IPC socket is `chmod 0600` (owner-only).
+- **Non-loopback TCP without an explicit auth token is rejected.**
+- **Bounded request size** — oversized request lines are dropped before parsing.
+- Stale socket and token-file cleanup on startup.
+
+Known limitations: on Windows, the named pipe and token file currently use default ACLs (not yet restricted to the current user the way Unix `0600` is), and the IPC trust boundary on all platforms is "same user" — the token file keeps casual same-user processes out, but any process that can read your files can read the token.
 
 ### Platform notes
 
