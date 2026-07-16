@@ -19,10 +19,11 @@ jobs:
         with:
           version: 9
 
+      # No registry-url here: it writes an .npmrc with an _authToken
+      # placeholder that shadows OIDC trusted publishing.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
 
       # Trusted publishing requires npm >= 11.5.1
       - run: npm install -g npm@latest
