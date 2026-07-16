@@ -103,11 +103,11 @@ export function registerManageIpcTool(server: McpServer) {
         if (!result || typeof result !== 'object') {
           return createErrorResponse('Failed to get a valid response from manage_ipc');
         }
-        if ('success' in result && !result.success) {
-          return createErrorResponse(result.error as string || `manage_ipc ${params.action} failed`);
-        }
 
-        const data = (result as any).data ?? {};
+        // socketClient.sendCommand resolves with the server response's `data`
+        // field directly (and rejects on failure), so `result` IS the data
+        // payload — do not unwrap `.data` again.
+        const data = result as any;
         switch (params.action) {
           case "invoke": {
             const trunc = data.truncated ? " [result truncated at 30000 chars]" : "";
