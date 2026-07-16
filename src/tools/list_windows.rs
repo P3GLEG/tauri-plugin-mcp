@@ -45,10 +45,5 @@ pub async fn handle_list_windows<R: Runtime>(
         }));
     }
 
-    Ok(SocketResponse {
-        success: true,
-        data: Some(serde_json::json!({ "windows": windows })),
-        error: None,
-        id: None,
-    })
+    Ok(SocketResponse::ok(None, Some(serde_json::json!({ "windows": windows }))))
 }

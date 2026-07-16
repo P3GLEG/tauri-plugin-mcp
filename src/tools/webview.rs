@@ -103,24 +103,14 @@ pub fn parse_js_response(result_string: &str) -> crate::socket_server::SocketRes
         .unwrap_or(false);
 
     if success {
-        crate::socket_server::SocketResponse {
-            success: true,
-            data: data.get("data").cloned(),
-            error: None,
-            id: None,
-        }
+        crate::socket_server::SocketResponse::ok(None, data.get("data").cloned())
     } else {
-        crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(
-                data.get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown error")
-                    .to_string(),
-            ),
-            id: None,
-        }
+        crate::socket_server::SocketResponse::err(
+            None,
+            data.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error"),
+        )
     }
 }
 
@@ -178,30 +168,15 @@ pub async fn handle_get_dom<R: Runtime>(
     ).await {
         Ok(dom_string) => {
             if dom_string.is_empty() {
-                Ok(crate::socket_server::SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some("Retrieved DOM string is empty".to_string()),
-                    id: None,
-                })
+                Ok(crate::socket_server::SocketResponse::err(None, "Retrieved DOM string is empty".to_string()))
             } else {
                 let data = serde_json::to_value(dom_string).map_err(|e| {
                     crate::error::Error::Anyhow(format!("Failed to serialize response: {}", e))
                 })?;
-                Ok(crate::socket_server::SocketResponse {
-                    success: true,
-                    data: Some(data),
-                    error: None,
-                    id: None,
-                })
+                Ok(crate::socket_server::SocketResponse::ok(None, Some(data)))
             }
         }
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(e.to_string()),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, e.to_string())),
     }
 }
 
@@ -245,12 +220,7 @@ pub async fn handle_get_page_map<R: Runtime>(
     ).await {
         Ok(result_string) => {
             if result_string.is_empty() || result_string == "\"\"" {
-                return Ok(crate::socket_server::SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some("Page map result is empty".to_string()),
-                    id: None,
-                });
+                return Ok(crate::socket_server::SocketResponse::err(None, "Page map result is empty".to_string()));
             }
 
             let data: Value = serde_json::from_str(&result_string)
@@ -277,27 +247,12 @@ pub async fn handle_get_page_map<R: Runtime>(
                 .filter(|s| !s.is_empty());
 
             if let Some(error_message) = page_map_error {
-                return Ok(crate::socket_server::SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(format!("Page map generation failed: {}", error_message)),
-                    id: None,
-                });
+                return Ok(crate::socket_server::SocketResponse::err(None, format!("Page map generation failed: {}", error_message)));
             }
 
-            Ok(crate::socket_server::SocketResponse {
-                success: true,
-                data: Some(data),
-                error: None,
-                id: None,
-            })
+            Ok(crate::socket_server::SocketResponse::ok(None, Some(data)))
         }
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for page map: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for page map: {}", e))),
     }
 }
 
@@ -349,32 +304,17 @@ pub async fn handle_get_element_position<R: Runtime>(
                 .unwrap_or(false);
 
             if success {
-                Ok(crate::socket_server::SocketResponse {
-                    success: true,
-                    data: Some(result_value.get("data").cloned().unwrap_or(Value::Null)),
-                    error: None,
-                    id: None,
-                })
+                Ok(crate::socket_server::SocketResponse::ok(None, Some(result_value.get("data").cloned().unwrap_or(Value::Null))))
             } else {
                 let error = result_value
                     .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown error occurred");
 
-                Ok(crate::socket_server::SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(error.to_string()),
-                    id: None,
-                })
+                Ok(crate::socket_server::SocketResponse::err(None, error.to_string()))
             }
         }
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for element position result: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for element position result: {}", e))),
     }
 }
 
@@ -428,32 +368,17 @@ pub async fn handle_send_text_to_element<R: Runtime>(
                 .unwrap_or(false);
 
             if success {
-                Ok(crate::socket_server::SocketResponse {
-                    success: true,
-                    data: Some(result_value.get("data").cloned().unwrap_or(Value::Null)),
-                    error: None,
-                    id: None,
-                })
+                Ok(crate::socket_server::SocketResponse::ok(None, Some(result_value.get("data").cloned().unwrap_or(Value::Null))))
             } else {
                 let error = result_value
                     .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown error occurred");
 
-                Ok(crate::socket_server::SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(error.to_string()),
-                    id: None,
-                })
+                Ok(crate::socket_server::SocketResponse::err(None, error.to_string()))
             }
         }
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for text input completion: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for text input completion: {}", e))),
     }
 }
 
@@ -478,12 +403,7 @@ pub async fn handle_get_page_state<R: Runtime>(
         std::time::Duration::from_secs(5),
     ).await {
         Ok(result) => Ok(parse_js_response(&result)),
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for page state: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for page state: {}", e))),
     }
 }
 
@@ -513,12 +433,7 @@ pub async fn handle_navigate_back<R: Runtime>(
         std::time::Duration::from_secs(5),
     ).await {
         Ok(result) => Ok(parse_js_response(&result)),
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for navigation: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for navigation: {}", e))),
     }
 }
 
@@ -551,12 +466,7 @@ pub async fn handle_scroll_page<R: Runtime>(
         std::time::Duration::from_secs(5),
     ).await {
         Ok(result) => Ok(parse_js_response(&result)),
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for scroll: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for scroll: {}", e))),
     }
 }
 
@@ -604,12 +514,7 @@ pub async fn handle_fill_form<R: Runtime>(
         std::time::Duration::from_secs(30),
     ).await {
         Ok(result) => Ok(parse_js_response(&result)),
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for form fill: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for form fill: {}", e))),
     }
 }
 
@@ -640,12 +545,7 @@ pub async fn handle_type_into_focused<R: Runtime>(
         .to_string();
 
     if text.is_empty() {
-        return Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some("text parameter is required and must not be empty".to_string()),
-            id: None,
-        });
+        return Ok(crate::socket_server::SocketResponse::err(None, "text parameter is required and must not be empty".to_string()));
     }
 
     let delay_ms = payload
@@ -667,7 +567,11 @@ pub async fn handle_type_into_focused<R: Runtime>(
         .unwrap_or(0);
 
     // Allow generous timeout for character-by-character typing + initial delay
-    let timeout_secs = std::cmp::max(10, (text.len() as u64 * delay_ms + initial_delay_ms) / 1000 + 5);
+    // Use character count (not byte length) to match the guest's per-character pacing
+    let timeout_secs = std::cmp::max(
+        10,
+        (text.chars().count() as u64 * delay_ms + initial_delay_ms) / 1000 + 5,
+    );
 
     match emit_and_wait(
         app,
@@ -678,12 +582,7 @@ pub async fn handle_type_into_focused<R: Runtime>(
         std::time::Duration::from_secs(timeout_secs),
     ).await {
         Ok(result) => Ok(parse_js_response(&result)),
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for type_into_focused: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for type_into_focused: {}", e))),
     }
 }
 
@@ -724,12 +623,74 @@ pub async fn handle_wait_for<R: Runtime>(
         std::time::Duration::from_secs(rust_timeout_secs),
     ).await {
         Ok(result) => Ok(parse_js_response(&result)),
-        Err(e) => Ok(crate::socket_server::SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Timeout waiting for condition: {}", e)),
-            id: None,
-        }),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, format!("Timeout waiting for condition: {}", e))),
+    }
+}
+
+/// Handler for press_key — dispatches synthetic keyboard events (with
+/// modifier flags and default-action emulation) in the webview.
+pub async fn handle_press_key<R: Runtime>(
+    app: &AppHandle<R>,
+    payload: Value,
+) -> Result<crate::socket_server::SocketResponse, crate::error::Error> {
+    let window_label = extract_window_label(&payload)?;
+    let _webview = crate::desktop::get_webview_for_eval(app, &window_label).ok_or_else(|| {
+        crate::error::Error::Anyhow(format!("Webview not found: {}", window_label))
+    })?;
+
+    let emit_target = get_emit_target(app, &window_label);
+
+    let js_payload = serde_json::json!({
+        "key": payload.get("key"),
+        "modifiers": payload.get("modifiers"),
+        "repeat": payload.get("repeat"),
+        "selectorType": payload.get("selector_type"),
+        "selectorValue": payload.get("selector_value"),
+    });
+
+    match emit_and_wait(
+        app,
+        &emit_target,
+        "press-key",
+        "press-key-response",
+        js_payload,
+        std::time::Duration::from_secs(15),
+    ).await {
+        Ok(result) => Ok(parse_js_response(&result)),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, e.to_string())),
+    }
+}
+
+/// Handler for set_file_input — attaches base64-encoded files to an
+/// `<input type="file">` via DataTransfer in the webview.
+pub async fn handle_set_file_input<R: Runtime>(
+    app: &AppHandle<R>,
+    payload: Value,
+) -> Result<crate::socket_server::SocketResponse, crate::error::Error> {
+    let window_label = extract_window_label(&payload)?;
+    let _webview = crate::desktop::get_webview_for_eval(app, &window_label).ok_or_else(|| {
+        crate::error::Error::Anyhow(format!("Webview not found: {}", window_label))
+    })?;
+
+    let emit_target = get_emit_target(app, &window_label);
+
+    let js_payload = serde_json::json!({
+        "selectorType": payload.get("selector_type"),
+        "selectorValue": payload.get("selector_value"),
+        "files": payload.get("files"),
+    });
+
+    // Larger timeout: base64 payloads can be big and decoding takes time
+    match emit_and_wait(
+        app,
+        &emit_target,
+        "set-file-input",
+        "set-file-input-response",
+        js_payload,
+        std::time::Duration::from_secs(30),
+    ).await {
+        Ok(result) => Ok(parse_js_response(&result)),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, e.to_string())),
     }
 }
 

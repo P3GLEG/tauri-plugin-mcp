@@ -17,6 +17,8 @@ interface LogEntry {
 interface LogCounts {
   error: number; warn: number; info: number; debug: number; trace: number;
   rust: number; js: number; marker: number;
+  /** Plugin-internal entries in the buffer (hidden unless include_plugin=true). */
+  plugin?: number;
 }
 
 interface BetweenBounds { begin: number; end: number; }
@@ -59,6 +61,7 @@ function formatTail(r: TailResult, format: "compact" | "json"): string {
     `(buffer ${r.bufferSize}/${r.bufferCapacity}, dropped ${r.droppedTotal})\n` +
     `# counts: error=${r.counts.error} warn=${r.counts.warn} info=${r.counts.info} ` +
     `debug=${r.counts.debug} trace=${r.counts.trace} | rust=${r.counts.rust} js=${r.counts.js} marker=${r.counts.marker}\n` +
+    (r.counts.plugin ? `# ${r.counts.plugin} plugin-internal entries hidden (pass include_plugin=true to see them)\n` : "") +
     bracket +
     (r.nextCursor != null ? `# nextCursor=${r.nextCursor} (pass as since_id to paginate)\n` : "");
   if (format === "json") return header + "\n" + JSON.stringify(r.entries, null, 2);
@@ -70,7 +73,8 @@ function formatSummary(r: SummaryResult): string {
   const lines: string[] = [
     `# log summary (buffer ${r.bufferSize}/${r.bufferCapacity}, dropped ${r.droppedTotal})`,
     `# counts: error=${r.counts.error} warn=${r.counts.warn} info=${r.counts.info} ` +
-      `debug=${r.counts.debug} trace=${r.counts.trace} | rust=${r.counts.rust} js=${r.counts.js}`,
+      `debug=${r.counts.debug} trace=${r.counts.trace} | rust=${r.counts.rust} js=${r.counts.js}` +
+      (r.counts.plugin ? ` (plugin-internal: ${r.counts.plugin}, hidden by default)` : ""),
     "",
     `## last ${r.recentWarningsAndErrors.length} warnings/errors:`,
   ];
@@ -98,7 +102,7 @@ export function registerQueryLogsTool(server: McpServer) {
       since_id: z.number().int().nonnegative().optional()
         .describe("Pagination cursor — only return entries with id > this. Pair with nextCursor from prior call."),
       since_ms: z.number().int().nonnegative().optional()
-        .describe("Only return entries with timestamp (unix ms) >= this. Use Date.now() - N to get last N ms."),
+        .describe("Only return entries with timestamp (unix epoch ms) >= this. Prefer since_id or between (log_mark) for 'what just happened' queries — they don't require knowing the current time."),
       limit: z.number().int().min(1).max(1000).default(100)
         .describe("Max entries to return (1-1000). Default 100."),
       head: z.boolean().default(false)
@@ -109,6 +113,8 @@ export function registerQueryLogsTool(server: McpServer) {
         .describe("Marker tag — return only entries between the two most recent log_mark calls with this id. If only one marker exists, the upper bound is 'now'. Use this to capture exactly the logs produced by an action you just performed."),
       include_markers: z.boolean().default(false)
         .describe("If true, include the marker sentinel entries themselves in the result. Default false."),
+      include_plugin: z.boolean().default(false)
+        .describe("If true, include the MCP plugin's own instrumentation logs (socket command tracing, JS bridge chatter). Hidden by default so app logs aren't buried. Default false."),
     },
     {
       title: "Query App Logs",
@@ -117,7 +123,7 @@ export function registerQueryLogsTool(server: McpServer) {
       idempotentHint: true,
       openWorldHint: false,
     },
-    async ({ mode, level, source, contains, since_id, since_ms, limit, head, format, between, include_markers }) => {
+    async ({ mode, level, source, contains, since_id, since_ms, limit, head, format, between, include_markers, include_plugin }) => {
       try {
         const payload: Record<string, unknown> = { mode, limit, head };
         if (level !== undefined) payload.level = level;
@@ -127,6 +133,7 @@ export function registerQueryLogsTool(server: McpServer) {
         if (since_ms !== undefined) payload.sinceMs = since_ms;
         if (between !== undefined) payload.between = between;
         if (include_markers) payload.includeMarkers = true;
+        if (include_plugin) payload.includePlugin = true;
 
         logCommandParams("query_logs", payload);
 

@@ -56,6 +56,7 @@ if (typeof window !== 'undefined' && !(window as any).__TAURI_MCP_LISTENER_PATCH
 }
 
 import { emit } from '@tauri-apps/api/event'; // For emitting the response
+import { invoke } from '@tauri-apps/api/core'; // For manage_ipc invoke passthrough
 import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow'; // For window-specific listener
 
 // Track the unlisten functions for cleanup
@@ -73,6 +74,9 @@ let waitForUnlistenFunction: (() => void) | null = null;
 let navigateWebviewUnlistenFunction: (() => void) | null = null;
 let manageZoomUnlistenFunction: (() => void) | null = null;
 let typeIntoFocusedUnlistenFunction: (() => void) | null = null;
+let pressKeyUnlistenFunction: (() => void) | null = null;
+let setFileInputUnlistenFunction: (() => void) | null = null;
+let ipcInvokeUnlistenFunction: (() => void) | null = null;
 
 // ---- Correlation ID helpers ----
 // Extract the _correlationId from an event payload (injected by Rust's emit_and_wait).
@@ -148,6 +152,9 @@ export async function setupPluginListeners() {
     navigateWebviewUnlistenFunction = await currentWindow.listen('navigate-webview', handleNavigateWebviewRequest);
     manageZoomUnlistenFunction = await currentWindow.listen('manage-zoom', handleManageZoomRequest);
     typeIntoFocusedUnlistenFunction = await currentWindow.listen('type-into-focused', handleTypeIntoFocusedRequest);
+    pressKeyUnlistenFunction = await currentWindow.listen('press-key', handlePressKeyRequest);
+    setFileInputUnlistenFunction = await currentWindow.listen('set-file-input', handleSetFileInputRequest);
+    ipcInvokeUnlistenFunction = await currentWindow.listen('ipc-invoke', handleIpcInvokeRequest);
 
     console.log('TAURI-PLUGIN-MCP: All event listeners are set up on the current window.');
 }
@@ -219,6 +226,18 @@ export async function cleanupPluginListeners() {
         typeIntoFocusedUnlistenFunction();
         typeIntoFocusedUnlistenFunction = null;
     }
+    if (pressKeyUnlistenFunction) {
+        pressKeyUnlistenFunction();
+        pressKeyUnlistenFunction = null;
+    }
+    if (setFileInputUnlistenFunction) {
+        setFileInputUnlistenFunction();
+        setFileInputUnlistenFunction = null;
+    }
+    if (ipcInvokeUnlistenFunction) {
+        ipcInvokeUnlistenFunction();
+        ipcInvokeUnlistenFunction = null;
+    }
     console.log('TAURI-PLUGIN-MCP: All event listeners have been removed.');
 }
 
@@ -239,7 +258,9 @@ async function handleGetElementPositionRequest(event: any) {
                 const refNum = parseInt(selectorValue, 10);
                 element = getElementByRef(refNum);
                 if (!element) {
-                    debugInfo.push(`No element found with ref=${refNum}. Call get_page_map first to populate refs.`);
+                    debugInfo.push(isRefDetached(refNum)
+                        ? `Element ref=${refNum} is no longer attached to the DOM (the page changed since the map was taken). Re-run query_page(mode='map') to get fresh refs.`
+                        : `No element found with ref=${refNum}. Refs are renumbered on every query_page(mode='map') call — run it first to populate refs.`);
                 }
                 break;
             case 'id':
@@ -266,6 +287,13 @@ async function handleGetElementPositionRequest(event: any) {
                     debugInfo.push(`No elements found with tag="${selectorValue}" (total matching: 0)`);
                 } else if (elemsByTag.length > 1) {
                     debugInfo.push(`Found ${elemsByTag.length} elements with tag="${selectorValue}", using the first one`);
+                }
+                break;
+            case 'css':
+                // Any CSS selector — first match
+                element = document.querySelector(selectorValue);
+                if (!element) {
+                    debugInfo.push(`No element found matching CSS selector "${selectorValue}"`);
                 }
                 break;
             case 'text':
@@ -307,7 +335,16 @@ async function handleGetElementPositionRequest(event: any) {
         
         // Get element position
         const rect = element.getBoundingClientRect();
-        console.log('TAURI-PLUGIN-MCP: Element rect:', { 
+        // A 0x0 rect means the element is hidden (display:none) or otherwise
+        // unrenderable — its "center" would be garbage coordinates.
+        if (rect.width === 0 && rect.height === 0) {
+            throw new Error(
+                `Element with ${selectorType}="${selectorValue}" was found but has a zero-size ` +
+                `bounding box (likely hidden via display:none or not rendered). ` +
+                `Refusing to return coordinates that cannot be clicked.`
+            );
+        }
+        console.log('TAURI-PLUGIN-MCP: Element rect:', {
             left: rect.left, 
             top: rect.top, 
             right: rect.right, 
@@ -446,6 +483,23 @@ function findElementByText(text: string): Element | null {
 // Helper function to click an element
 function clickElement(element: Element, centerX: number, centerY: number) {
     try {
+        // If the resolved element is not itself interactive (common with
+        // text matching, which finds the innermost element holding the
+        // text), climb to the nearest interactive ancestor — many apps
+        // attach their handler on a row/card container and ignore events
+        // whose dispatch target is an inner presentational node.
+        if (!isInteractive(element)) {
+            let p: Element | null = element.parentElement;
+            while (p && p !== document.body) {
+                if (isInteractive(p)) {
+                    console.log(`TAURI-PLUGIN-MCP: Click target <${element.tagName.toLowerCase()}> is not interactive; retargeting to ancestor <${p.tagName.toLowerCase()}${p.id ? '#' + p.id : ''}>`);
+                    element = p;
+                    break;
+                }
+                p = p.parentElement;
+            }
+        }
+
         // Explicitly focus the element before dispatching mouse events.
         // Synthetic dispatchEvent() does NOT trigger the browser's native focus
         // behavior the way a real user click does. Without this, document.activeElement
@@ -461,35 +515,33 @@ function clickElement(element: Element, centerX: number, centerY: number) {
             _lastFocusedElement = element;
         }
 
-        // Create and dispatch mouse events
-        const mouseDown = new MouseEvent('mousedown', {
+        // Dispatch the full modern event sequence a real click produces:
+        // pointerdown → mousedown → pointerup → mouseup → click.
+        // Many component libraries (Radix, Headless UI, custom
+        // pointer-event handlers) listen for PointerEvents and ignore
+        // plain MouseEvents entirely — without pointerdown/pointerup
+        // those elements never activate.
+        const base = {
             bubbles: true,
             cancelable: true,
+            composed: true,
             view: window,
             clientX: centerX,
-            clientY: centerY
-        });
+            clientY: centerY,
+            button: 0,
+        };
+        const pointerBase = {
+            ...base,
+            pointerId: 1,
+            isPrimary: true,
+            pointerType: 'mouse' as const,
+        };
 
-        const mouseUp = new MouseEvent('mouseup', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: centerX,
-            clientY: centerY
-        });
-
-        const click = new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: centerX,
-            clientY: centerY
-        });
-
-        // Dispatch the events
-        element.dispatchEvent(mouseDown);
-        element.dispatchEvent(mouseUp);
-        element.dispatchEvent(click);
+        element.dispatchEvent(new PointerEvent('pointerdown', { ...pointerBase, buttons: 1 }));
+        element.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1 }));
+        element.dispatchEvent(new PointerEvent('pointerup', { ...pointerBase, buttons: 0 }));
+        element.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+        element.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0, detail: 1 }));
 
         return {
             success: true,
@@ -882,7 +934,22 @@ function buildPageMapEntry(el: Element, interactiveOnly: boolean): PageMapElemen
     if (ariaLabel && ariaLabel !== text) entry.ariaLabel = ariaLabel;
 
     const role = el.getAttribute('role');
-    if (role) entry.role = role;
+    if (role) {
+        entry.role = role;
+        // ARIA widget state: without this an agent can't tell which
+        // radio/tab/switch in a group is active.
+        if (role === 'radio' || role === 'checkbox' || role === 'switch') {
+            const checked = el.getAttribute('aria-checked');
+            if (checked !== null) entry.checked = checked === 'true';
+        } else if (role === 'tab' || role === 'option') {
+            const selected = el.getAttribute('aria-selected');
+            if (selected !== null) entry.checked = selected === 'true';
+        }
+    }
+    if (entry.checked === undefined) {
+        const pressed = el.getAttribute('aria-pressed');
+        if (pressed !== null) entry.checked = pressed === 'true';
+    }
 
     if (el.id) entry.id = el.id;
 
@@ -1095,6 +1162,15 @@ function getPageMap(options?: PageMapOptions): PageMapResult {
             const el = document.querySelector(sel);
             if (el) roots.push(el);
         }
+        // A requested scope that matches nothing must fail loudly — silently
+        // scanning the whole page would return results labeled with a scope
+        // that was never applied.
+        if (roots.length === 0) {
+            throw new Error(
+                `scope_selector matched no elements: ${selectors.join(', ')}. ` +
+                `Nothing was scanned — fix the selector, or omit scope_selector to scan the whole page.`
+            );
+        }
     }
     if (roots.length === 0) {
         roots.push(document.body || document.documentElement);
@@ -1233,9 +1309,21 @@ function getPageMap(options?: PageMapOptions): PageMapResult {
     return result;
 }
 
-// Export the ref map lookup for use by other handlers
+// Export the ref map lookup for use by other handlers.
+// Detached elements (removed from the DOM since the map was built) are
+// treated as not found: their bounding rect is 0x0 at (0,0), so returning
+// them would hand callers garbage coordinates.
 function getElementByRef(ref: number): Element | null {
-    return _pageMapRefElements.get(ref) || null;
+    const el = _pageMapRefElements.get(ref) || null;
+    if (el && !el.isConnected) return null;
+    return el;
+}
+
+// Whether a ref was known but its element has since left the DOM — lets
+// error messages distinguish "stale ref" from "never existed".
+function isRefDetached(ref: number): boolean {
+    const el = _pageMapRefElements.get(ref);
+    return !!el && !el.isConnected;
 }
 
 async function handleLocalStorageRequest(event: any) {
@@ -1244,42 +1332,14 @@ async function handleLocalStorageRequest(event: any) {
 
     try {
         const { action, key, value } = event.payload;
-        
-        // Convert values that might be JSON strings to their actual values
-        let processedKey = key;
-        let processedValue = value;
-        
-        // If key is a JSON string, try to parse it
-        if (typeof key === 'string') {
-            try {
-                if (key.trim().startsWith('{') || key.trim().startsWith('[')) {
-                    processedKey = JSON.parse(key);
-                }
-            } catch (e) {
-                // Keep original if parsing fails
-                console.log('TAURI-PLUGIN-MCP: Key not valid JSON, using as string');
-            }
-        }
-        
-        // If value is a JSON string, try to parse it
-        if (typeof value === 'string') {
-            try {
-                if (value.trim().startsWith('{') || value.trim().startsWith('[')) {
-                    processedValue = JSON.parse(value);
-                }
-            } catch (e) {
-                // Keep original if parsing fails
-                console.log('TAURI-PLUGIN-MCP: Value not valid JSON, using as string');
-            }
-        }
-        
-        console.log('TAURI-PLUGIN-MCP: Processing localStorage operation', { 
-            action, 
-            processedKey, 
-            processedValue 
-        });
-        
-        const result = performLocalStorageOperation(action, processedKey, processedValue);
+
+        // Keys and values are stored verbatim: localStorage values are
+        // strings, and callers routinely store JSON text. Parsing a
+        // JSON-looking value here and re-stringifying it later corrupts it
+        // to "[object Object]".
+        console.log('TAURI-PLUGIN-MCP: Processing localStorage operation', { action, key });
+
+        const result = performLocalStorageOperation(action, key, value);
         await emitResponse('get-local-storage-response', correlationId, result);
         console.log('TAURI-PLUGIN-MCP: Emitted get-local-storage-response');
     } catch (error) {
@@ -1336,10 +1396,10 @@ function performLocalStorageOperation(action: string, key?: string | any, value?
             
             const keyStr = String(key);
             const valueStr = String(value);
-            console.log(`TAURI-PLUGIN-MCP: Setting localStorage item: ${keyStr} = ${valueStr}`);
-            
+            console.log(`TAURI-PLUGIN-MCP: Setting localStorage item: ${keyStr}`);
+
             localStorage.setItem(keyStr, valueStr);
-            return { success: true };
+            return { success: true, data: { action: 'set', key: keyStr, length: valueStr.length } };
         case 'remove':
             if (!key) {
                 console.log('TAURI-PLUGIN-MCP: Remove operation failed - no key provided');
@@ -1347,11 +1407,11 @@ function performLocalStorageOperation(action: string, key?: string | any, value?
             }
             console.log(`TAURI-PLUGIN-MCP: Removing localStorage item with key: ${key}`);
             localStorage.removeItem(String(key));
-            return { success: true };
+            return { success: true, data: { action: 'remove', key: String(key) } };
         case 'clear':
             console.log('TAURI-PLUGIN-MCP: Clearing all localStorage items');
             localStorage.clear();
-            return { success: true };
+            return { success: true, data: { action: 'clear' } };
         case 'keys':
             console.log('TAURI-PLUGIN-MCP: Getting all localStorage keys');
             return {
@@ -1375,13 +1435,18 @@ async function handleJsExecutionRequest(event: any) {
             ? event.payload._payload
             : event.payload;
 
-        // Execute the code
-        const result = executeJavaScript(code);
+        // Execute the code; await thenables so promise results come back
+        // resolved instead of serializing a pending Promise as "{}".
+        let result = executeJavaScript(code);
+        if (result !== null && (typeof result === 'object' || typeof result === 'function')
+            && typeof (result as any).then === 'function') {
+            result = await result;
+        }
 
         // Prepare response with result and type information
         const response = {
-            result: typeof result === 'object' ? JSON.stringify(result) : String(result),
-            type: typeof result
+            result: stringifyJsResult(result),
+            type: result === null ? 'null' : typeof result
         };
 
         // Send back the result
@@ -1401,15 +1466,45 @@ async function handleJsExecutionRequest(event: any) {
     }
 }
 
-// Function to safely execute JavaScript code
+// Stringify an execute_js result without double-encoding surprises:
+// objects become JSON (or a best-effort string for circular structures),
+// everything else becomes its natural string form.
+function stringifyJsResult(result: any): string {
+    if (result === undefined) return 'undefined';
+    if (result === null) return 'null';
+    if (typeof result === 'object') {
+        try {
+            return JSON.stringify(result);
+        } catch {
+            // Circular or otherwise non-serializable structure
+            return String(result);
+        }
+    }
+    return String(result);
+}
+
+// Function to execute JavaScript code with eval completion-value semantics:
+// multi-statement code returns the value of its final expression
+// (e.g. `doSetup(); 'done'` returns 'done'), matching what the tool promises.
 function executeJavaScript(code: string): any {
-    // Using Function constructor is slightly safer than eval
-    // It runs in global scope rather than local scope
+    // A leading '{' parses as a block statement, not an object literal:
+    // `{a: 1}` evaluates as a label (returning 1) and `{a: 1, b: 2}` throws.
+    // Try such code as a parenthesized expression first.
+    if (/^\s*\{/.test(code)) {
+        try {
+            return (0, eval)('(' + code + ')');
+        } catch (e) {
+            // Not an expression (e.g. a genuine block) — fall through.
+            if (!(e instanceof SyntaxError)) throw e;
+        }
+    }
     try {
-        // For expressions, return the result
-        return new Function(`return (${code})`)();
-    } catch {
-        // If that fails, try executing as statements
+        // Indirect eval: runs in global scope and returns the completion value.
+        return (0, eval)(code);
+    } catch (e) {
+        // Re-throw runtime errors; only fall back for syntax errors so code
+        // using top-level `return` still works via the Function wrapper.
+        if (!(e instanceof SyntaxError)) throw e;
         return new Function(code)();
     }
 }
@@ -1441,7 +1536,9 @@ async function handleSendTextToElementRequest(event: any) {
                 const refNum = parseInt(selectorValue, 10);
                 element = getElementByRef(refNum);
                 if (!element) {
-                    debugInfo.push(`No element found with ref=${refNum}. Call get_page_map first to populate refs.`);
+                    debugInfo.push(isRefDetached(refNum)
+                        ? `Element ref=${refNum} is no longer attached to the DOM (the page changed since the map was taken). Re-run query_page(mode='map') to get fresh refs.`
+                        : `No element found with ref=${refNum}. Refs are renumbered on every query_page(mode='map') call — run it first to populate refs.`);
                 }
                 break;
             case 'id':
@@ -1470,6 +1567,13 @@ async function handleSendTextToElementRequest(event: any) {
                     debugInfo.push(`Found ${elemsByTag.length} elements with tag="${selectorValue}", using the first one`);
                 }
                 break;
+            case 'css':
+                // Any CSS selector — first match
+                element = document.querySelector(selectorValue);
+                if (!element) {
+                    debugInfo.push(`No element found matching CSS selector "${selectorValue}"`);
+                }
+                break;
             case 'text':
                 // Find element by text content
                 element = findElementByText(selectorValue);
@@ -1485,10 +1589,32 @@ async function handleSendTextToElementRequest(event: any) {
             throw new Error(`Element with ${selectorType}="${selectorValue}" not found. ${debugInfo.join(' ')}`);
         }
         
+        // <select> elements: pick the matching option instead of typing
+        if (element instanceof HTMLSelectElement) {
+            if (!selectOptionOnSelect(element, text)) {
+                throw selectOptionError(element, text);
+            }
+            await emitResponse('send-text-to-element-response', correlationId, {
+                success: true,
+                data: {
+                    element: {
+                        tag: element.tagName,
+                        classes: element.className,
+                        id: element.id,
+                        type: 'select',
+                        text: text,
+                        isEditable: true,
+                        strategy: 'select'
+                    }
+                }
+            });
+            return;
+        }
+
         // Check if the element is an input field, textarea, or has contentEditable
-        const isEditableElement = 
-            element instanceof HTMLInputElement || 
-            element instanceof HTMLTextAreaElement || 
+        const isEditableElement =
+            element instanceof HTMLInputElement ||
+            element instanceof HTMLTextAreaElement ||
             element.isContentEditable;
             
         if (!isEditableElement) {
@@ -1545,6 +1671,27 @@ async function handleSendTextToElementRequest(event: any) {
             error: error instanceof Error ? error.toString() : String(error)
         }).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
     }
+}
+
+// Select the <option> of a <select> whose value or visible text matches (case-insensitive).
+// Dispatches input + change so React/Vue controlled selects pick up the new value.
+function selectOptionOnSelect(el: HTMLSelectElement, value: string): boolean {
+    const needle = value.toLowerCase().trim();
+    for (const opt of el.options) {
+        if (opt.value.toLowerCase().trim() === needle || opt.text.toLowerCase().trim() === needle) {
+            el.focus();
+            opt.selected = true;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }
+    }
+    return false;
+}
+
+function selectOptionError(el: HTMLSelectElement, value: string): Error {
+    const available = Array.from(el.options).map(o => o.text || o.value).slice(0, 20);
+    return new Error(`No <option> matching "${value}" found in <select>${el.id ? ' #' + el.id : ''}. Available options: ${JSON.stringify(available)}`);
 }
 
 // Simulate typing into React controlled input/textarea elements.
@@ -1946,7 +2093,7 @@ async function handleScrollPageRequest(event: any) {
         } else if (typeof toRef === 'number') {
             const el = getElementByRef(toRef);
             if (!el) {
-                throw new Error(`No element found with ref=${toRef}. Call get_page_map first.`);
+                throw new Error(`No element found with ref=${toRef}. Refs are renumbered on every query_page(mode='map') call — run it first.`);
             }
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else {
@@ -1969,12 +2116,30 @@ async function handleScrollPageRequest(event: any) {
         // Wait for smooth scroll to settle
         await new Promise(resolve => setTimeout(resolve, 350));
 
+        // For to_ref, report whether the element actually ended up in the
+        // viewport — page-level scrollPosition says nothing when the scroll
+        // happened inside a nested container.
+        let target: Record<string, unknown> | undefined;
+        if (typeof toRef === 'number') {
+            const el = getElementByRef(toRef);
+            if (el) {
+                const r = el.getBoundingClientRect();
+                target = {
+                    ref: toRef,
+                    inViewport: r.bottom > 0 && r.right > 0
+                        && r.top < window.innerHeight && r.left < window.innerWidth,
+                    rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+                };
+            }
+        }
+
         await emitResponse('scroll-page-response', correlationId, JSON.stringify({
             success: true,
             data: {
                 scrollPosition: { x: window.scrollX, y: window.scrollY },
                 pageHeight: document.documentElement.scrollHeight,
-                viewport: { width: window.innerWidth, height: window.innerHeight }
+                viewport: { width: window.innerWidth, height: window.innerHeight },
+                ...(target ? { target } : {})
             }
         }));
     } catch (error) {
@@ -2042,13 +2207,12 @@ async function handleFillFormRequest(event: any) {
 
                 if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
                     el.focus();
-                    // simulateReactInputTyping already clears via select+delete
-                    // so we just call it directly (clear param is implicit)
-                    await simulateReactInputTyping(el, field.value, 0);
+                    // Forward the field's clear preference (default true)
+                    await simulateReactInputTyping(el, field.value, 0, clear);
                 } else if (el instanceof HTMLSelectElement) {
-                    el.focus();
-                    el.value = field.value;
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (!selectOptionOnSelect(el, field.value)) {
+                        throw selectOptionError(el, field.value);
+                    }
                 } else if (el instanceof HTMLElement && el.isContentEditable) {
                     el.focus();
                     if (clear) {
@@ -2263,20 +2427,8 @@ async function handleTypeIntoFocusedRequest(event: any) {
         // Route to the appropriate typing strategy
         if (el instanceof HTMLSelectElement) {
             elementInfo.strategy = 'select';
-            // For <select>, find the option whose text or value matches and select it
-            const lowerText = text.toLowerCase().trim();
-            let matched = false;
-            for (const opt of el.options) {
-                if (opt.text.toLowerCase().trim() === lowerText || opt.value.toLowerCase().trim() === lowerText) {
-                    opt.selected = true;
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) {
-                throw new Error(`No <option> matching "${text}" found in <select>${el.id ? ' #' + el.id : ''}.`);
+            if (!selectOptionOnSelect(el, text)) {
+                throw selectOptionError(el, text);
             }
         } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
             elementInfo.strategy = 'react-input';
@@ -2327,6 +2479,333 @@ async function handleTypeIntoFocusedRequest(event: any) {
             success: false,
             error: error instanceof Error ? error.message : String(error)
         }));
+    }
+}
+
+// --- press_key handler ---
+// Dispatches synthetic keydown/keyup events (with modifier flags) to a target
+// element. Synthetic events are untrusted so the browser will NOT perform
+// native default actions — the common ones (text insertion, Enter submit,
+// Tab focus traversal, Backspace/Delete) are emulated when the app's own
+// handlers don't call preventDefault().
+
+const NAMED_KEY_CODES: Record<string, string> = {
+    Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', Backspace: 'Backspace',
+    Delete: 'Delete', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown',
+    ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', Home: 'Home', End: 'End',
+    PageUp: 'PageUp', PageDown: 'PageDown', ' ': 'Space',
+    F1: 'F1', F2: 'F2', F3: 'F3', F4: 'F4', F5: 'F5', F6: 'F6',
+    F7: 'F7', F8: 'F8', F9: 'F9', F10: 'F10', F11: 'F11', F12: 'F12',
+};
+
+function codeForKey(key: string): string {
+    if (NAMED_KEY_CODES[key]) return NAMED_KEY_CODES[key];
+    if (key.length === 1) {
+        if (/[a-zA-Z]/.test(key)) return 'Key' + key.toUpperCase();
+        if (/[0-9]/.test(key)) return 'Digit' + key;
+    }
+    return '';
+}
+
+function tabbableElements(): HTMLElement[] {
+    const sel = 'a[href], button, input, textarea, select, summary, [tabindex]';
+    return Array.from(document.querySelectorAll(sel))
+        .filter((el): el is HTMLElement => el instanceof HTMLElement)
+        .filter(el => !el.hasAttribute('disabled') && el.tabIndex !== -1 && isElementVisible(el));
+}
+
+function emulateDefaultKeyAction(el: Element, key: string, shift: boolean) {
+    const isTextInput = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+    const isEditable = isTextInput || (el instanceof HTMLElement && el.isContentEditable);
+
+    if (key.length === 1) {
+        if (isEditable) document.execCommand('insertText', false, key);
+        return;
+    }
+    switch (key) {
+        case 'Enter':
+            if (el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable)) {
+                document.execCommand('insertText', false, '\n');
+            } else if (el instanceof HTMLInputElement && el.form) {
+                if (typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
+                else el.form.submit();
+            } else if (el instanceof HTMLElement && (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button')) {
+                el.click();
+            }
+            break;
+        case 'Tab': {
+            const tabbables = tabbableElements();
+            if (tabbables.length === 0) break;
+            const idx = tabbables.indexOf(el as HTMLElement);
+            const next = shift
+                ? tabbables[(idx <= 0 ? tabbables.length : idx) - 1]
+                : tabbables[(idx + 1) % tabbables.length];
+            if (next) {
+                next.focus();
+                if (isTypeable(next)) _lastFocusedElement = next;
+            }
+            break;
+        }
+        case 'Backspace':
+            if (isEditable) document.execCommand('delete', false);
+            break;
+        case 'Delete':
+            if (isEditable) document.execCommand('forwardDelete', false);
+            break;
+    }
+}
+
+async function handlePressKeyRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received press-key, payload:', event.payload);
+    const correlationId = getCorrelationId(event.payload);
+
+    // Dedup guard: key presses are stateful, never process twice
+    if (correlationId && _handledCorrelationIds.has(correlationId)) {
+        console.warn('TAURI-PLUGIN-MCP: Ignoring duplicate press-key for correlation ID:', correlationId);
+        return;
+    }
+    if (correlationId) {
+        _handledCorrelationIds.add(correlationId);
+        setTimeout(() => _handledCorrelationIds.delete(correlationId), 30000);
+    }
+
+    try {
+        // Rust forwards omitted optional fields as JSON null (not undefined),
+        // so `= []` destructuring defaults don't apply — coalesce explicitly.
+        const p = event.payload || {};
+        const rawKey = p.key;
+        const modifiers: string[] = Array.isArray(p.modifiers) ? p.modifiers : [];
+        const repeat = (typeof p.repeat === 'number' && p.repeat > 0) ? p.repeat : 1;
+        const selectorType = p.selectorType || null;
+        const selectorValue = p.selectorValue || null;
+        if (!rawKey || typeof rawKey !== 'string') {
+            throw new Error('key parameter is required (e.g. "Escape", "Enter", "Tab", "ArrowDown", or a single character)');
+        }
+        const key = rawKey === 'Space' ? ' ' : rawKey;
+
+        // Resolve target: explicit selector > active element > last focused > body
+        let target: Element | null = null;
+        if (selectorType && selectorValue) {
+            target = resolveElement({
+                ref: selectorType === 'ref' ? parseInt(selectorValue, 10) : undefined,
+                selectorType: selectorType === 'ref' ? undefined : selectorType,
+                selectorValue,
+            });
+            if (!target) {
+                throw new Error(`Element with ${selectorType}="${selectorValue}" not found. ${selectorType === 'ref' ? 'Call query_page (mode=map) first to populate refs.' : ''}`);
+            }
+            if (target instanceof HTMLElement) target.focus();
+        } else {
+            target = (document.activeElement && document.activeElement !== document.body)
+                ? document.activeElement
+                : (_lastFocusedElement || document.body);
+        }
+
+        const mods = new Set(modifiers.map(m => String(m).toLowerCase()));
+        const eventInit: KeyboardEventInit = {
+            key,
+            code: codeForKey(key),
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            ctrlKey: mods.has('ctrl') || mods.has('control'),
+            metaKey: mods.has('cmd') || mods.has('meta') || mods.has('command'),
+            shiftKey: mods.has('shift'),
+            altKey: mods.has('alt') || mods.has('option'),
+        };
+        const hasCtrlOrMeta = !!(eventInit.ctrlKey || eventInit.metaKey);
+        const count = Math.max(1, Math.min(100, Number(repeat) || 1));
+        let lastDefaultPrevented = false;
+
+        for (let i = 0; i < count; i++) {
+            // Re-resolve the active element each press — Tab/Enter can move focus
+            const el = (document.activeElement && document.activeElement !== document.body)
+                ? document.activeElement
+                : (target || document.body);
+            const kd = new KeyboardEvent('keydown', eventInit);
+            const proceed = el.dispatchEvent(kd);
+            lastDefaultPrevented = !proceed;
+
+            if (proceed && !hasCtrlOrMeta && !eventInit.altKey) {
+                emulateDefaultKeyAction(el, key, eventInit.shiftKey === true);
+            }
+
+            el.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+            if (i < count - 1) await new Promise(r => setTimeout(r, 30));
+        }
+
+        const finalTarget = document.activeElement || target;
+        await emitResponse('press-key-response', correlationId, JSON.stringify({
+            success: true,
+            data: {
+                key: rawKey,
+                code: eventInit.code,
+                modifiers: Array.from(mods),
+                repeat: count,
+                defaultPrevented: lastDefaultPrevented,
+                target: finalTarget ? {
+                    tag: finalTarget.tagName.toLowerCase(),
+                    id: (finalTarget as HTMLElement).id || undefined,
+                } : null,
+            }
+        }));
+    } catch (error) {
+        await emitResponse('press-key-response', correlationId, JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        })).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
+    }
+}
+
+// --- set_file_input handler ---
+// Attaches files (sent base64-encoded from the MCP server) to an
+// <input type="file"> via DataTransfer, since the native file chooser
+// cannot be driven programmatically from inside the webview.
+async function handleSetFileInputRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received set-file-input');
+    const correlationId = getCorrelationId(event.payload);
+
+    // Dedup guard
+    if (correlationId && _handledCorrelationIds.has(correlationId)) {
+        console.warn('TAURI-PLUGIN-MCP: Ignoring duplicate set-file-input for correlation ID:', correlationId);
+        return;
+    }
+    if (correlationId) {
+        _handledCorrelationIds.add(correlationId);
+        setTimeout(() => _handledCorrelationIds.delete(correlationId), 30000);
+    }
+
+    try {
+        const { selectorType, selectorValue, files } = event.payload || {};
+        if (!Array.isArray(files) || files.length === 0) {
+            throw new Error('files array is required');
+        }
+        if (!selectorType || !selectorValue) {
+            throw new Error('selectorType and selectorValue are required to target the file input');
+        }
+
+        const element = resolveElement({
+            ref: selectorType === 'ref' ? parseInt(selectorValue, 10) : undefined,
+            selectorType: selectorType === 'ref' ? undefined : selectorType,
+            selectorValue,
+        });
+        if (!element) {
+            throw new Error(`Element with ${selectorType}="${selectorValue}" not found.`);
+        }
+
+        // Accept the input itself, or a container/label holding one
+        let input: HTMLInputElement | null = null;
+        if (element instanceof HTMLInputElement && element.type === 'file') {
+            input = element;
+        } else {
+            input = element.querySelector('input[type="file"]');
+        }
+        if (!input) {
+            throw new Error(`Element <${element.tagName.toLowerCase()}> is not (and does not contain) an <input type="file">`);
+        }
+
+        if (files.length > 1 && !input.multiple) {
+            throw new Error(`Input does not accept multiple files (got ${files.length}). Set the "multiple" attribute or send one file.`);
+        }
+
+        const dt = new DataTransfer();
+        for (const f of files) {
+            // Decode via fetch(data:) — the engine decodes base64 natively,
+            // unlike a char-by-char atob loop that freezes the UI thread for
+            // seconds at multi-MB sizes.
+            const resp = await fetch(`data:application/octet-stream;base64,${f.dataBase64}`);
+            const bytes = await resp.arrayBuffer();
+            dt.items.add(new File([bytes], f.name, { type: f.mimeType || 'application/octet-stream' }));
+        }
+        input.files = dt.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+
+        await emitResponse('set-file-input-response', correlationId, JSON.stringify({
+            success: true,
+            data: {
+                filesAttached: files.map((f: any) => f.name),
+                input: { id: input.id || undefined, name: input.name || undefined },
+            }
+        }));
+    } catch (error) {
+        await emitResponse('set-file-input-response', correlationId, JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        })).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
+    }
+}
+
+// --- ipc_invoke handler (manage_ipc action=invoke) ---
+// Invokes a Tauri command through the webview's real IPC path, so the call
+// goes through the app's actual invoke pipeline (capability checks included)
+// and is captured by the invoke wrapper like any frontend-originated call.
+const MAX_IPC_RESULT_CHARS = 30000;
+
+async function handleIpcInvokeRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received ipc-invoke, payload:', event.payload);
+    const correlationId = getCorrelationId(event.payload);
+
+    // Dedup guard: invoking a command twice could double-apply a mutation
+    if (correlationId && _handledCorrelationIds.has(correlationId)) {
+        console.warn('TAURI-PLUGIN-MCP: Ignoring duplicate ipc-invoke for correlation ID:', correlationId);
+        return;
+    }
+    if (correlationId) {
+        _handledCorrelationIds.add(correlationId);
+        setTimeout(() => _handledCorrelationIds.delete(correlationId), 30000);
+    }
+
+    try {
+        const { command, args, timeoutMs = 10000 } = event.payload || {};
+        if (!command || typeof command !== 'string') {
+            throw new Error('command parameter is required');
+        }
+
+        const started = Date.now();
+        const result = await Promise.race([
+            invoke(command, (args && typeof args === 'object') ? args : {}),
+            new Promise((_, reject) => setTimeout(
+                () => reject(new Error(`invoke("${command}") timed out after ${timeoutMs}ms (the command may still be running)`)),
+                timeoutMs
+            )),
+        ]);
+
+        let serialized: string;
+        try {
+            serialized = result === undefined ? 'undefined'
+                : (typeof result === 'string' ? result : JSON.stringify(result));
+        } catch {
+            serialized = String(result);
+        }
+        let truncated = false;
+        if (serialized.length > MAX_IPC_RESULT_CHARS) {
+            serialized = serialized.slice(0, MAX_IPC_RESULT_CHARS);
+            truncated = true;
+        }
+
+        await emitResponse('ipc-invoke-response', correlationId, JSON.stringify({
+            success: true,
+            data: {
+                command,
+                result: serialized,
+                resultType: typeof result,
+                truncated: truncated || undefined,
+                durationMs: Date.now() - started,
+            }
+        }));
+    } catch (error) {
+        // Tauri command errors are often plain objects/strings, not Errors
+        let message: string;
+        if (error instanceof Error) message = error.message;
+        else if (typeof error === 'string') message = error;
+        else {
+            try { message = JSON.stringify(error); } catch { message = String(error); }
+        }
+        await emitResponse('ipc-invoke-response', correlationId, JSON.stringify({
+            success: false,
+            error: `invoke failed: ${message}`
+        })).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
     }
 }
 

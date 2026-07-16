@@ -3,10 +3,10 @@
  * MCP Protocol Smoke Test
  *
  * Spawns the MCP server, sends initialize + tools/list over stdio,
- * and validates that all 23 tools are registered with correct schemas.
+ * and validates that all 13 tools are registered with correct schemas.
  *
  * Run:  node test/smoke-test.mjs
- * (from mcp-server-ts/ directory, after `npx tsc`)
+ * (from mcp-server-ts/ directory, after `npm run build`)
  */
 
 import { spawn } from "node:child_process";
@@ -14,99 +14,120 @@ import { once } from "node:events";
 
 // ── Expectations ──────────────────────────────────────────────────────
 
-const EXPECTED_TOOL_COUNT = 23;
+const EXPECTED_TOOL_COUNT = 15;
 
 const EXPECTED_TOOLS = [
   "take_screenshot",
+  "query_page",
+  "click",
+  "type_text",
+  "press_key",
+  "mouse_action",
+  "navigate",
   "execute_js",
-  "get_dom",
+  "manage_storage",
   "manage_window",
-  "manage_local_storage",
-  "simulate_text_input",
-  "simulate_mouse_movement",
-  "get_element_position",
-  "send_text_to_element",
-  "get_page_map",
-  "get_page_state",
-  "navigate_back",
-  "scroll_page",
-  "fill_form",
   "wait_for",
-  "get_app_info",
-  "list_windows",
-  "navigate_webview",
-  "manage_events",
-  "manage_cookies",
-  "manage_devtools",
-  "manage_zoom",
-  "manage_webview_state",
+  "restart_app",
+  "query_logs",
+  "log_mark",
+  "manage_ipc",
 ];
 
 // Tools whose selector_type enum MUST include "ref"
-const TOOLS_WITH_REF_SELECTOR = ["get_element_position", "send_text_to_element"];
+const TOOLS_WITH_REF_SELECTOR = ["query_page", "click", "type_text", "press_key"];
 
 // Specific schema property checks:  tool -> param -> assertion
 const SCHEMA_CHECKS = {
-  get_page_map: {
+  take_screenshot: {
     params: [
-      "window_label", "include_content", "interactive_only",
-      "scope_selector", "max_depth", "delta", "wait_for_stable",
-      "quiet_ms", "max_wait_ms", "timeout_secs",
+      "window_label", "quality", "max_width", "max_size_mb",
+      "output_dir", "inline", "audience",
     ],
-    annotations: { readOnlyHint: true, destructiveHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   },
-  get_page_state: {
-    params: ["window_label"],
-    annotations: { readOnlyHint: true, idempotentHint: true },
+  query_page: {
+    params: [
+      "mode", "window_label", "include_content", "interactive_only",
+      "scope_selector", "max_depth", "delta", "wait_for_stable",
+      "quiet_ms", "max_wait_ms", "timeout_secs", "include_metadata",
+      "selector_type", "selector_value", "should_click",
+    ],
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   },
-  navigate_back: {
-    params: ["window_label", "direction", "delta"],
+  click: {
+    params: [
+      "x", "y", "button", "click_type",
+      "selector_type", "selector_value", "window_label",
+    ],
     annotations: { destructiveHint: true },
   },
-  scroll_page: {
-    params: ["window_label", "direction", "amount", "to_ref", "to_top", "to_bottom"],
+  type_text: {
+    params: [
+      "text", "selector_type", "selector_value", "fields",
+      "submit_ref", "files", "window_label", "delay_ms", "initial_delay_ms",
+    ],
+    annotations: { destructiveHint: true },
+  },
+  press_key: {
+    params: [
+      "key", "modifiers", "repeat",
+      "selector_type", "selector_value", "window_label",
+    ],
+    annotations: { destructiveHint: true },
+  },
+  manage_ipc: {
+    params: [
+      "action", "command", "args", "event", "payload", "kind",
+      "name_contains", "status", "since_id", "limit", "timeout_ms",
+      "window_label",
+    ],
+    annotations: { destructiveHint: true },
+  },
+  mouse_action: {
+    params: [
+      "action", "x", "y", "relative", "end_x", "end_y",
+      "direction", "amount", "to_ref", "to_top", "to_bottom", "window_label",
+    ],
     annotations: { destructiveHint: false },
   },
-  fill_form: {
-    params: ["window_label", "fields", "submit_ref"],
+  navigate: {
+    params: ["action", "url", "delta", "window_label"],
+    annotations: { destructiveHint: false },
+  },
+  execute_js: {
+    params: ["code", "window_label", "timeout_ms"],
+    annotations: { destructiveHint: true },
+  },
+  manage_storage: {
+    params: ["store", "action", "key", "value", "url", "window_label"],
+    annotations: { destructiveHint: true },
+  },
+  manage_window: {
+    params: [
+      "action", "window_label", "x", "y", "width", "height",
+      "scale", "r", "g", "b", "a", "enabled",
+    ],
     annotations: { destructiveHint: true },
   },
   wait_for: {
     params: ["window_label", "text", "selector", "ref", "state", "timeout_ms"],
-    annotations: { readOnlyHint: true },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   },
-  get_element_position: {
-    annotations: { readOnlyHint: true, destructiveHint: false },
-  },
-  get_app_info: {
-    annotations: { readOnlyHint: true, destructiveHint: false },
-  },
-  list_windows: {
-    annotations: { readOnlyHint: true, destructiveHint: false },
-  },
-  navigate_webview: {
-    params: ["action", "window_label"],
-    annotations: { destructiveHint: false },
-  },
-  manage_events: {
-    params: ["action"],
-    annotations: { destructiveHint: false },
-  },
-  manage_cookies: {
-    params: ["action", "window_label"],
+  restart_app: {
+    params: ["delay_ms"],
     annotations: { destructiveHint: true },
   },
-  manage_devtools: {
-    params: ["action", "window_label"],
-    annotations: { destructiveHint: false },
+  query_logs: {
+    params: [
+      "mode", "level", "source", "contains", "since_id", "since_ms",
+      "limit", "head", "format", "between", "include_markers",
+    ],
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   },
-  manage_zoom: {
-    params: ["action", "window_label"],
+  log_mark: {
+    params: ["id", "note"],
     annotations: { destructiveHint: false },
-  },
-  manage_webview_state: {
-    params: ["action", "window_label"],
-    annotations: { destructiveHint: true },
   },
 };
 
@@ -171,18 +192,17 @@ async function collectResponses(proc, expectedCount, timeoutMs = 10000) {
 async function main() {
   console.log("\n\x1b[1mMCP Protocol Smoke Test\x1b[0m\n");
 
-  // Spawn server — set TAURI_MCP_SOCKET to a dummy value so it doesn't
-  // try to connect to a real socket (it will fail to connect but that's
-  // fine — we only need tool registration to work)
+  // Spawn server — point it at a TCP port nothing listens on so the
+  // startup connection attempt fails fast (tool registration doesn't
+  // require a live socket).
   const proc = spawn("node", ["build/index.js"], {
     cwd: new URL("..", import.meta.url).pathname,
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
-      // Prevent socket connection attempts from blocking
-      TAURI_MCP_TRANSPORT: "tcp",
+      TAURI_MCP_CONNECTION_TYPE: "tcp",
       TAURI_MCP_TCP_HOST: "127.0.0.1",
-      TAURI_MCP_TCP_PORT: "0", // invalid port triggers fast failure
+      TAURI_MCP_TCP_PORT: "1", // nothing listens here — fast failure
     },
   });
 
@@ -229,8 +249,8 @@ async function main() {
       // instructions may be at result.instructions or result.serverInfo.instructions
       const instructions = initResp.result.instructions ?? serverInfo?.instructions;
       check(
-        typeof instructions === "string" && instructions.includes("get_page_map"),
-        `Server instructions present and mentions get_page_map`,
+        typeof instructions === "string" && instructions.includes("query_page"),
+        `Server instructions present and mention query_page`,
         `Missing or incomplete server instructions: ${instructions}`
       );
     } else {
@@ -315,46 +335,6 @@ async function main() {
         }
       }
     }
-
-    // ── Validate descriptions mention key concepts ─────────────────
-    console.log("\n6. Description quality checks:");
-
-    const domTool = toolMap["get_dom"];
-    if (domTool) {
-      check(
-        domTool.description.includes("get_page_map") || domTool.description.includes("large"),
-        "get_dom: warns about size / recommends get_page_map",
-        `get_dom: description lacks size warning: "${domTool.description.substring(0, 80)}..."`
-      );
-    }
-
-    const textInputTool = toolMap["simulate_text_input"];
-    if (textInputTool) {
-      check(
-        textInputTool.description.includes("send_text_to_element") || textInputTool.description.includes("focused"),
-        "simulate_text_input: mentions send_text_to_element or focused element",
-        `simulate_text_input: description unclear: "${textInputTool.description.substring(0, 80)}..."`
-      );
-    }
-
-    const sendTextTool = toolMap["send_text_to_element"];
-    if (sendTextTool) {
-      check(
-        sendTextTool.description.includes("ref") || sendTextTool.description.includes("get_page_map"),
-        "send_text_to_element: mentions ref or get_page_map workflow",
-        `send_text_to_element: description lacks ref guidance: "${sendTextTool.description.substring(0, 80)}..."`
-      );
-    }
-
-    const getPosTool = toolMap["get_element_position"];
-    if (getPosTool) {
-      check(
-        getPosTool.description.includes("ref") || getPosTool.description.includes("get_page_map"),
-        "get_element_position: mentions ref or get_page_map workflow",
-        `get_element_position: description lacks ref guidance: "${getPosTool.description.substring(0, 80)}..."`
-      );
-    }
-
   } finally {
     proc.kill();
     // Wait for process to actually exit

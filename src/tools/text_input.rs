@@ -21,18 +21,8 @@ pub async fn handle_simulate_text_input<R: Runtime>(
         Ok(response) => {
             let data = serde_json::to_value(response)
                 .map_err(|e| Error::Anyhow(format!("Failed to serialize response: {}", e)))?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(data),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(data)))
         }
-        Err(e) => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(e.to_string()),
-            id: None,
-        }),
+        Err(e) => Ok(SocketResponse::err(None, e.to_string())),
     }
 }

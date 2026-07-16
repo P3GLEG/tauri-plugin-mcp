@@ -12,7 +12,11 @@ struct CookiesPayload {
     url: Option<String>,
 }
 
-/// Handler for manage_cookies — get/set/delete cookies
+/// Handler for manage_cookies — get cookies, or clear ALL browsing data.
+///
+/// Note: the `clear_all_browsing_data` action (legacy alias: `clear_all`) wipes
+/// ALL browsing data via `webview.clear_all_browsing_data()` — cookies,
+/// localStorage, IndexedDB, and caches — not just cookies.
 pub async fn handle_manage_cookies<R: Runtime>(
     app: &AppHandle<R>,
     payload: Value,
@@ -38,19 +42,9 @@ pub async fn handle_manage_cookies<R: Runtime>(
                         })
                     })
                     .collect();
-                Ok(SocketResponse {
-                    success: true,
-                    data: Some(serde_json::json!({"cookies": cookie_list})),
-                    error: None,
-                    id: None,
-                })
+                Ok(SocketResponse::ok(None, Some(serde_json::json!({"cookies": cookie_list}))))
             }
-            Err(e) => Ok(SocketResponse {
-                success: false,
-                data: None,
-                error: Some(format!("Failed to get cookies: {}", e)),
-                id: None,
-            }),
+            Err(e) => Ok(SocketResponse::err(None, format!("Failed to get cookies: {}", e))),
         },
         "get_for_url" => {
             let url = parsed.url.ok_or_else(|| {
@@ -71,43 +65,23 @@ pub async fn handle_manage_cookies<R: Runtime>(
                             })
                         })
                         .collect();
-                    Ok(SocketResponse {
-                        success: true,
-                        data: Some(serde_json::json!({"url": url, "cookies": cookie_list})),
-                        error: None,
-                        id: None,
-                    })
+                    Ok(SocketResponse::ok(None, Some(serde_json::json!({"url": url, "cookies": cookie_list}))))
                 }
-                Err(e) => Ok(SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(format!("Failed to get cookies for URL: {}", e)),
-                    id: None,
-                }),
+                Err(e) => Ok(SocketResponse::err(None, format!("Failed to get cookies for URL: {}", e))),
             }
         }
-        "clear_all" => match webview.clear_all_browsing_data() {
-            Ok(_) => Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"cleared": true})),
-                error: None,
-                id: None,
-            }),
-            Err(e) => Ok(SocketResponse {
-                success: false,
-                data: None,
-                error: Some(format!("Failed to clear browsing data: {}", e)),
-                id: None,
-            }),
+        // "clear_all" is kept as a deprecated alias for backwards compatibility.
+        "clear_all_browsing_data" | "clear_all" => match webview.clear_all_browsing_data() {
+            Ok(_) => Ok(SocketResponse::ok(None, Some(serde_json::json!({
+                    "cleared": true,
+                    "scope": "all_browsing_data",
+                    "note": "All browsing data was cleared (cookies, localStorage, IndexedDB, caches), not just cookies.",
+                })))),
+            Err(e) => Ok(SocketResponse::err(None, format!("Failed to clear browsing data: {}", e))),
         },
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!(
-                "Unknown action '{}'. Valid actions: get_all, get_for_url, clear_all",
+        _ => Ok(SocketResponse::err(None, format!(
+                "Unknown action '{}'. Valid actions: get_all, get_for_url, clear_all_browsing_data",
                 parsed.action
-            )),
-            id: None,
-        }),
+            ))),
     }
 }

@@ -1,7 +1,28 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { socketClient } from "./client.js";
 import { createErrorResponse, createSuccessResponse, logCommandParams } from "./response-helpers.js";
+
+// File upload limits: base64 payloads travel through the socket and the
+// Tauri event system, so keep them bounded.
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB per file
+const MAX_TOTAL_BYTES = 25 * 1024 * 1024; // 25 MB per call
+
+const MIME_BY_EXT: Record<string, string> = {
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+  ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+  ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown",
+  ".json": "application/json", ".csv": "text/csv", ".xml": "application/xml",
+  ".html": "text/html", ".zip": "application/zip",
+  ".mp4": "video/mp4", ".webm": "video/webm",
+  ".mp3": "audio/mpeg", ".wav": "audio/wav",
+};
+
+function mimeForFile(filePath: string): string {
+  return MIME_BY_EXT[path.extname(filePath).toLowerCase()] || "application/octet-stream";
+}
 
 // Parse send_text_to_element multi-format response
 function parseSendTextResponse(result: any, text: string): ReturnType<typeof createSuccessResponse> | ReturnType<typeof createErrorResponse> {
@@ -41,11 +62,11 @@ function parseSendTextResponse(result: any, text: string): ReturnType<typeof cre
 export function registerTypeTextTool(server: McpServer) {
   server.tool(
     "type_text",
-    "Types text into the page. Three modes: (1) Provide 'fields' array to fill multiple form fields at once (each by ref or selector). (2) Provide 'selector_type'+'selector_value' to target a specific element. (3) Provide only 'text' to type into the currently focused element. Supports inputs, textareas, contentEditable, React controlled components, Lexical, and Slate editors.",
+    "Types text into the page. Four modes: (1) Provide 'fields' array to fill multiple form fields at once (each by ref or selector). (2) Provide 'selector_type'+'selector_value' to target a specific element. (3) Provide only 'text' to type into the currently focused element. (4) Provide 'files' (absolute paths) + selector to attach files to an <input type=\"file\">. Supports inputs, textareas, <select> dropdowns (text selects the matching option by value or label), contentEditable, React controlled components, Lexical, and Slate editors.",
     {
       text: z.string().optional().describe("Text to type. Required unless using 'fields' mode."),
       // Selector-based targeting
-      selector_type: z.enum(["ref", "id", "class", "tag", "text"]).optional().describe("Selector type for targeting a specific element. 'ref' uses numbered reference from query_page map mode."),
+      selector_type: z.enum(["ref", "id", "class", "css", "tag", "text"]).optional().describe("Selector type for targeting a specific element. 'ref' uses numbered reference from query_page map mode. 'css' accepts any CSS selector."),
       selector_value: z.string().optional().describe("Selector value. For 'ref', provide the ref number as string."),
       // Form fill mode
       fields: z.array(z.object({
@@ -56,6 +77,8 @@ export function registerTypeTextTool(server: McpServer) {
         clear: z.boolean().default(true).describe("Clear field before entering text. Default: true."),
       })).optional().describe("Array of form fields to fill. Each needs either a ref or selector_type+selector_value."),
       submit_ref: z.number().int().optional().describe("(fields mode) Ref of submit button to click after filling all fields."),
+      // File upload mode
+      files: z.array(z.string()).optional().describe("Absolute paths of files to attach to an <input type=\"file\">. Requires selector_type/selector_value targeting the input (or a container holding it). Max 10MB per file, 25MB total. CAUTION: reads any file on the host and hands its contents to the page — never attach credentials, keys, or other sensitive files, especially if the page shows remote/untrusted content."),
       // Common options
       window_label: z.string().default("main").describe("Target window. Defaults to 'main'."),
       delay_ms: z.number().int().nonnegative().optional().describe("Delay between keystrokes in ms. Default varies by mode."),
@@ -71,6 +94,63 @@ export function registerTypeTextTool(server: McpServer) {
     async (params) => {
       try {
         const { window_label } = params;
+
+        // Mode 0: File upload (files array provided)
+        if (params.files && params.files.length > 0) {
+          if (!params.selector_type || !params.selector_value) {
+            return createErrorResponse("'selector_type' and 'selector_value' are required in files mode to target the <input type=\"file\">");
+          }
+
+          const fileEntries: Array<{ name: string; mimeType: string; dataBase64: string }> = [];
+          let totalBytes = 0;
+          for (const filePath of params.files) {
+            if (!path.isAbsolute(filePath)) {
+              return createErrorResponse(`File path must be absolute: ${filePath}`);
+            }
+            let stat;
+            try {
+              stat = await fs.stat(filePath);
+            } catch {
+              return createErrorResponse(`File not found or unreadable: ${filePath}`);
+            }
+            if (!stat.isFile()) {
+              return createErrorResponse(`Not a regular file: ${filePath}`);
+            }
+            if (stat.size > MAX_FILE_BYTES) {
+              return createErrorResponse(`File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB > 10MB): ${filePath}`);
+            }
+            totalBytes += stat.size;
+            if (totalBytes > MAX_TOTAL_BYTES) {
+              return createErrorResponse(`Total upload size exceeds 25MB limit`);
+            }
+            const data = await fs.readFile(filePath);
+            fileEntries.push({
+              name: path.basename(filePath),
+              mimeType: mimeForFile(filePath),
+              dataBase64: data.toString("base64"),
+            });
+          }
+
+          const payload = {
+            selector_type: params.selector_type,
+            selector_value: params.selector_value,
+            files: fileEntries,
+            window_label,
+          };
+          logCommandParams('set_file_input', { ...payload, files: fileEntries.map(f => f.name) });
+          const result = await socketClient.sendCommand('set_file_input', payload, 60000);
+
+          if (!result || typeof result !== 'object') {
+            return createErrorResponse('Failed to get a valid response from set_file_input');
+          }
+          if ('success' in result && !result.success) {
+            return createErrorResponse(result.error as string || 'set_file_input failed');
+          }
+          // sendCommand resolves with the response's `data` field directly
+          const data = (result as any).data ?? result;
+          const names = Array.isArray(data.filesAttached) ? data.filesAttached.join(', ') : fileEntries.map(f => f.name).join(', ');
+          return createSuccessResponse(`Attached ${fileEntries.length} file(s) to file input: ${names}`);
+        }
 
         // Mode 1: Fill form (fields array provided)
         if (params.fields) {

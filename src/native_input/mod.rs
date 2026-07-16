@@ -22,6 +22,16 @@ pub use self::windows as backend;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use self::unix as backend;
 
+/// Release any OS-level mouse button left held open by an interrupted
+/// `mouse_down`-only call (a drag whose `mouse_up` never arrived). Call this
+/// when a client connection ends so a dropped drag can't wedge the real
+/// cursor's button. No-op on platforms whose backend does not hold mouse
+/// button state across separate requests.
+pub fn release_held_buttons() {
+    #[cfg(target_os = "macos")]
+    backend::release_held_buttons();
+}
+
 /// Mouse button types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseButton {

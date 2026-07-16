@@ -27,39 +27,19 @@ pub async fn handle_manage_devtools<R: Runtime>(
     match parsed.action.as_str() {
         "open" => {
             ww.open_devtools();
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"action": "open", "devtools": true})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"action": "open", "devtools": true}))))
         }
         "close" => {
             ww.close_devtools();
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"action": "close", "devtools": false})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"action": "close", "devtools": false}))))
         }
         "is_open" => {
             let is_open = ww.is_devtools_open();
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"isOpen": is_open})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"isOpen": is_open}))))
         }
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!(
+        _ => Ok(SocketResponse::err(None, format!(
                 "Unknown action '{}'. Valid actions: open, close, is_open",
                 parsed.action
-            )),
-            id: None,
-        }),
+            ))),
     }
 }

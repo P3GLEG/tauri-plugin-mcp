@@ -10,7 +10,7 @@ export function registerNavigateTool(server: McpServer) {
     {
       action: z.enum(["goto", "back", "forward", "reload"]).describe("Navigation action to perform."),
       url: z.string().optional().describe("(goto) URL to navigate to. Required for 'goto'."),
-      delta: z.number().int().optional().describe("(back/forward) Number of history steps to jump. Negative=back, positive=forward."),
+      delta: z.number().int().optional().describe("(back/forward) History steps to jump via history.go(delta): negative=back, positive=forward. The sign alone decides direction — when delta is set, the action value is ignored (action='back' with delta=2 goes FORWARD 2). Omit for a single step in the action's direction."),
       window_label: z.string().default("main").describe("Target window. Defaults to 'main'."),
     },
     {

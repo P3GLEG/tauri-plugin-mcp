@@ -1,15 +1,38 @@
 {
   "name": "tauri-plugin-mcp-server",
-  "version": "0.1.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc"
+  "version": "0.2.0",
+  "description": "MCP server that lets AI agents interact with and debug Tauri applications via the tauri-plugin-mcp socket (screenshots, DOM access, input simulation, log querying)",
+  "main": "build/index.js",
+  "type": "module",
+  "bin": {
+    "tauri-mcp-server": "./build/index.js"
   },
-  "keywords": [],
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', 0o755)\"",
+    "test": "node test/smoke-test.mjs",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "tauri",
+    "mcp",
+    "model-context-protocol",
+    "automation",
+    "testing",
+    "ai-agents"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/P3GLEG/tauri-plugin-mcp.git",
+    "directory": "mcp-server-ts"
+  },
   "author": "Pegleg",
   "license": "MIT",
-  "description": "",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "zod": "^3.25.76"
@@ -17,12 +40,5 @@
   "devDependencies": {
     "@types/node": "^22.15.17",
     "typescript": "^5.8.3"
-  },
-  "type": "module",
-  "bin": {
-    "tauri-mcp-server": "./build/index.js"
-  },
-  "files": [
-    "build"
-  ]
+  }
 }

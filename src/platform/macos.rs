@@ -1,7 +1,7 @@
 use crate::models::ScreenshotResponse;
 use crate::{Error, Result};
 use image;
-use log::{debug, info, error};
+use log::{error, info};
 use tauri::Runtime;
 use core_graphics::display::{
     CGWindowListCopyWindowInfo, kCGWindowListOptionAll, kCGWindowListOptionIncludingWindow,
@@ -13,7 +13,10 @@ use core_graphics::base::CGFloat;
 
 // Import shared functionality
 use crate::desktop::ScreenshotContext;
-use crate::platform::shared::{finalize_screenshot, get_window_title_from_handle, handle_screenshot_task};
+use crate::platform::shared::{
+    finalize_screenshot, find_matching_window, get_window_title_from_handle,
+    handle_screenshot_task, WindowMatchCandidate,
+};
 use crate::shared::ScreenshotParams;
 
 /// Window info extracted from CGWindowListCopyWindowInfo
@@ -320,29 +323,9 @@ pub async fn take_screenshot<R: Runtime>(
     }).await
 }
 
-// Helper function to find the window in the xcap window list - optimized version
+// Helper function to find the window in the xcap window list.
+// Delegates the matching ladder to the shared cross-platform helper.
 fn find_window(xcap_windows: &[xcap::Window], window_title: &str, application_name: &str) -> Option<xcap::Window> {
-    let application_name_lower = application_name.to_lowercase();
-    let window_title_lower = window_title.to_lowercase();
-
-    info!(
-        "[TAURI-MCP] Searching for window with title: '{}', app_name: '{}' (case-insensitive)",
-        window_title,
-        application_name
-    );
-
-    // Log all windows to help with troubleshooting
-    debug!("[TAURI-MCP] ============= ALL WINDOWS =============");
-    for window in xcap_windows {
-        debug!(
-            "[TAURI-MCP] Window: title='{}', app_name='{}', minimized={}",
-            window.title(),
-            window.app_name(),
-            window.is_minimized()
-        );
-    }
-    debug!("[TAURI-MCP] ======================================");
-
     // Check if we might have a permissions issue (only Window Server menubar visible)
     if xcap_windows.len() <= 1 {
         let only_menubar = xcap_windows.iter().all(|w|
@@ -355,77 +338,17 @@ fn find_window(xcap_windows: &[xcap::Window], window_title: &str, application_na
         }
     }
 
-    // Step 1: First pass - direct application name match (highest priority)
-    if !application_name_lower.is_empty() {
-        for window in xcap_windows {
-            if window.is_minimized() {
-                continue;
-            }
+    let candidates: Vec<WindowMatchCandidate> = xcap_windows
+        .iter()
+        .map(|w| WindowMatchCandidate {
+            title: w.title().to_string(),
+            app_name: w.app_name().to_string(),
+            is_minimized: w.is_minimized(),
+        })
+        .collect();
 
-            let app_name = window.app_name().to_lowercase();
-
-            // Direct match for application name - highest priority
-            if app_name.contains(&application_name_lower) {
-                info!(
-                    "[TAURI-MCP] Found window by app name: '{}'",
-                    window.app_name()
-                );
-                return Some(window.clone());
-            }
-        }
-    }
-
-    // Step 2: Second pass - exact window title match
-    for window in xcap_windows {
-        if window.is_minimized() {
-            continue;
-        }
-
-        if window.title() == window_title {
-            info!(
-                "[TAURI-MCP] Found window by exact title match: '{}'",
-                window.title()
-            );
-            return Some(window.clone());
-        }
-    }
-
-    // Step 3: Third pass - case-insensitive window title match
-    for window in xcap_windows {
-        if window.is_minimized() {
-            continue;
-        }
-
-        if window.title().to_lowercase() == window_title_lower {
-            info!(
-                "[TAURI-MCP] Found window by case-insensitive title match: '{}'",
-                window.title()
-            );
-            return Some(window.clone());
-        }
-    }
-
-    // Step 4: Fourth pass - partial window title match (title contains search string)
-    for window in xcap_windows {
-        if window.is_minimized() {
-            continue;
-        }
-
-        if window.title().to_lowercase().contains(&window_title_lower) {
-            info!(
-                "[TAURI-MCP] Found window by partial title match: '{}'",
-                window.title()
-            );
-            return Some(window.clone());
-        }
-    }
-
-    error!(
-        "[TAURI-MCP] No matching window found for title='{}', app_name='{}'",
-        window_title,
-        application_name
-    );
-    None
+    find_matching_window(&candidates, window_title, application_name)
+        .map(|i| xcap_windows[i].clone())
 }
 
 // Helper function to find window in CGWindowListCopyWindowInfo results

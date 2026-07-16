@@ -164,58 +164,48 @@ export class TauriSocketClient {
   }
   
   private handleData(data: Buffer) {
-    // Accumulate data in the buffer
+    // Accumulate data in the buffer. The protocol is newline-delimited JSON:
+    // a partial line (no trailing newline yet) simply stays in the buffer
+    // until more data arrives.
     this.buffer += data.toString();
-    
+
     console.error(`Received ${data.length} bytes, buffer size: ${this.buffer.length}`);
-    
-    // Try to find complete JSON responses that end with newline
+
+    // Process every complete (newline-terminated) line in the buffer.
     let newlineIndex;
     while ((newlineIndex = this.buffer.indexOf('\n')) !== -1) {
       const jsonStr = this.buffer.substring(0, newlineIndex);
       this.buffer = this.buffer.substring(newlineIndex + 1);
-      
+
       console.error(`Processing JSON response of ${jsonStr.length} bytes`);
-      
+
       try {
         const response = JSON.parse(jsonStr);
 
-        // Match response to request by ID, with FIFO fallback for backward compatibility
-        let callbackId: string | undefined;
-
+        // Match response to request by ID. The server always echoes the
+        // request id, so an unknown id means the response is stale
+        // (e.g. its request already timed out) — log and drop it.
         if (response.id && this.responseCallbacks.has(response.id)) {
-          // Direct match by request ID
-          callbackId = response.id;
-        } else {
-          // FIFO fallback: oldest pending request (sorted by timestamp prefix)
-          const callbackIds = Array.from(this.responseCallbacks.keys());
-          if (callbackIds.length > 0) {
-            callbackIds.sort();
-            callbackId = callbackIds[0];
-          }
-        }
+          const callback = this.responseCallbacks.get(response.id)!;
+          // Remove the callback before invoking to prevent double calls
+          this.responseCallbacks.delete(response.id);
 
-        if (callbackId) {
-          const callback = this.responseCallbacks.get(callbackId);
-          if (callback) {
-            // Remove the callback before invoking to prevent double calls
-            this.responseCallbacks.delete(callbackId);
-
-            if (!response.success) {
-              // If the server indicates failure, reject the promise with the error message
-              const errorMsg = response.error || 'Command failed without specific error';
-              console.error(`Command failed with error: ${errorMsg}`);
-              callback.reject(new Error(errorMsg));
-            } else {
-              callback.resolve(response.data);
-            }
+          if (!response.success) {
+            // If the server indicates failure, reject the promise with the error message
+            const errorMsg = response.error || 'Command failed without specific error';
+            console.error(`Command failed with error: ${errorMsg}`);
+            callback.reject(new Error(errorMsg));
+          } else {
+            callback.resolve(response.data);
           }
         } else {
-          console.error('Received response but no callbacks were waiting for it');
+          console.error(`Warning: received response with unknown id ${JSON.stringify(response.id)}; dropping it (${this.responseCallbacks.size} request(s) still pending)`);
         }
       } catch (err) {
-        console.error('Error parsing response:', err);
-        
+        // A complete (newline-terminated) line that fails to parse is corrupt —
+        // it cannot be a partial message, so log and drop it.
+        console.error('Error parsing response line, dropping it:', err);
+
         // Log first and last 100 characters of the JSON string for debugging
         if (jsonStr.length > 200) {
           console.error(`JSON starts with: ${jsonStr.substring(0, 100)}...`);
@@ -223,25 +213,24 @@ export class TauriSocketClient {
         } else {
           console.error(`Full JSON: ${jsonStr}`);
         }
-        
-        // If parsing failed, this could be a partial message
-        // so we'll just add it back to the buffer and wait for more data
-        // But if it's too large (>10MB), something is wrong, so clear it
-        if (this.buffer.length > 10_000_000) {
-          console.error('Buffer overflow, clearing buffer');
-          this.buffer = '';
-          
-          // Reject any pending callbacks
-          for (const [id, callback] of this.responseCallbacks.entries()) {
-            callback.reject(new Error('Buffer overflow'));
-            this.responseCallbacks.delete(id);
-          }
-        }
+      }
+    }
+
+    // Guard against a runaway partial line: if the remaining (incomplete)
+    // buffer exceeds 10MB without a newline, something is wrong — clear it
+    // and fail all pending requests.
+    if (this.buffer.length > 10_000_000) {
+      console.error(`Buffer overflow: ${this.buffer.length} bytes without a newline; clearing buffer`);
+      this.buffer = '';
+
+      for (const [id, callback] of this.responseCallbacks.entries()) {
+        callback.reject(new Error('Buffer overflow'));
+        this.responseCallbacks.delete(id);
       }
     }
   }
 
-  async sendCommand(command: string, payload: Record<string, any> | string = {}): Promise<any> {
+  async sendCommand(command: string, payload: Record<string, any> | string = {}, timeoutMs: number = 30000): Promise<any> {
     if (!this.isConnected) {
       try {
         await this.connect();
@@ -277,27 +266,45 @@ export class TauriSocketClient {
         ...(this.authToken ? { authToken: this.authToken } : {})
       }) + '\n';
 
-      this.responseCallbacks.set(requestId, { resolve, reject });
+      // Wrap resolve/reject so the timeout timer is always cleared when the
+      // request settles — otherwise a lingering timer can delay process exit.
+      let timer: NodeJS.Timeout | undefined;
+      this.responseCallbacks.set(requestId, {
+        resolve: (value: any) => {
+          if (timer !== undefined) clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (reason: any) => {
+          if (timer !== undefined) clearTimeout(timer);
+          reject(reason);
+        },
+      });
 
       // Log the request
       console.error(`Sending request: ${command} with payload: ${JSON.stringify(finalPayload)}`);
-      
+
       // Send the request
       this.client!.write(request, (err) => {
         if (err) {
           console.error(`Error writing to socket: ${err.message}`);
+          const callback = this.responseCallbacks.get(requestId);
           this.responseCallbacks.delete(requestId);
-          reject(new Error(`Failed to send request: ${err.message}`));
+          const error = new Error(`Failed to send request: ${err.message}`);
+          if (callback) {
+            callback.reject(error); // clears the timer
+          } else {
+            reject(error);
+          }
         }
       });
-      
+
       // Set a timeout to prevent hanging if response never comes
-      setTimeout(() => {
+      timer = setTimeout(() => {
         if (this.responseCallbacks.has(requestId)) {
           this.responseCallbacks.delete(requestId);
-          reject(new Error('Request timed out after 30 seconds'));
+          reject(new Error(`Request timed out after ${timeoutMs / 1000} seconds`));
         }
-      }, 30000);
+      }, timeoutMs);
     });
   }
 

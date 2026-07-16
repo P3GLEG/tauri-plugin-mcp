@@ -28,8 +28,10 @@ function findSocketOwnerPid(socketPath: string): number | undefined {
 
 /**
  * Force-kill the Tauri app process when the graceful restart command can't
- * reach it (app is frozen/unresponsive). In dev mode, `cargo tauri dev`
- * will automatically relaunch the app after the process exits.
+ * reach it (app is frozen/unresponsive). Note: nothing relaunches the app
+ * after a kill — this is a last resort for a frozen process, and the
+ * reconnect wait below only succeeds if something else (e.g. a supervisor)
+ * brings the app back.
  */
 function forceKillApp(socketPath: string): boolean {
   const pid = findSocketOwnerPid(socketPath);
@@ -63,7 +65,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export function registerRestartAppTool(server: McpServer) {
   server.tool(
     "restart_app",
-    "Restarts the Tauri application and waits for it to come back online. Use when the app is in a broken state, unresponsive, or needs a fresh start. If the app is completely frozen, it will be force-killed. This is a destructive operation — all in-memory state will be lost.",
+    "Restarts the Tauri application and waits for it to come back online. Use when the app is in a broken state, unresponsive, or needs a fresh start. If the app is completely frozen, it will be force-killed. This is a destructive operation — all in-memory state will be lost. NOT available in dev mode (`tauri dev`): the app will refuse and suggest asking the user to restart the dev command; use navigate(action='reload') to reload the frontend instead.",
     {
       delay_ms: z.number().int().min(100).max(5000).optional()
         .describe("Delay in milliseconds before the app restarts (default 500). Allows in-flight operations to complete."),
@@ -76,6 +78,9 @@ export function registerRestartAppTool(server: McpServer) {
       openWorldHint: false,
     },
     async ({ delay_ms }) => {
+      // Honor the same env vars the socket client uses so the force-kill
+      // path targets the correct socket.
+      const isTcp = process.env.TAURI_MCP_CONNECTION_TYPE === 'tcp';
       const socketPath = process.env.TAURI_MCP_IPC_PATH || '/tmp/tauri-mcp.sock';
       let restartMethod = 'graceful';
 
@@ -92,8 +97,32 @@ export function registerRestartAppTool(server: McpServer) {
           );
           console.error('Restart command acknowledged. Waiting for app to come back...');
         } catch (gracefulError) {
-          // Graceful restart failed — app is likely frozen. Force kill it.
-          console.error(`Graceful restart failed: ${(gracefulError as Error).message}`);
+          const gracefulMessage = (gracefulError as Error).message;
+          console.error(`Graceful restart failed: ${gracefulMessage}`);
+
+          // Only treat the app as frozen when the command could not be
+          // delivered (timeout / connection failure). An explicit error
+          // response means the app is alive and REFUSING (e.g. dev-mode
+          // restart is unsupported) — surface it instead of killing a
+          // healthy process.
+          const undeliverable = gracefulMessage.includes('timed out')
+            || gracefulMessage.includes('Failed to connect')
+            || gracefulMessage.includes('Failed to send request');
+          if (!undeliverable) {
+            return createErrorResponse(`Restart refused by the app: ${gracefulMessage}`);
+          }
+
+          if (isTcp) {
+            // Force-kill discovers the app PID via the Unix socket file, which
+            // doesn't exist for TCP connections. Nothing safe to kill.
+            return createErrorResponse(
+              'Graceful restart failed and the connection type is TCP, so the app process ' +
+              'cannot be located via the IPC socket for a force-kill. ' +
+              'Please kill and relaunch the app manually. ' +
+              `Original error: ${(gracefulError as Error).message}`
+            );
+          }
+
           console.error('App appears frozen. Attempting force kill...');
           restartMethod = 'force-kill';
 
@@ -107,7 +136,7 @@ export function registerRestartAppTool(server: McpServer) {
           console.error('Force kill sent. Waiting for app to restart...');
         }
 
-        // Wait for reconnection (dev mode auto-relaunches after process exit)
+        // Wait for the restarted process's socket server to come back
         try {
           await socketClient.waitForReconnect(30, 2000);
         } catch (reconnectError) {
@@ -129,27 +158,35 @@ export function registerRestartAppTool(server: McpServer) {
         }
 
         // After restart, the WebView may be blank (IPC reconnects but frontend hasn't loaded).
-        // Navigate to the app's root URL to ensure the frontend is rendered.
-        const appUrl = process.env.TAURI_DEV_URL || 'http://localhost:1420/';
-        console.error(`Navigating WebView to ${appUrl} to reload frontend...`);
-        try {
-          await socketClient.sendCommand('navigate_webview', {
-            action: 'navigate',
-            window_label: 'main',
-            url: appUrl,
-          });
-          // Give the page time to load before the final health check
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          await socketClient.sendCommand('ping', { value: 'post-navigate-health-check' });
-        } catch (navError) {
-          return createErrorResponse(
-            `Reconnected after restart but failed to reload the WebView: ${(navError as Error).message}. ` +
-            `Try manually: navigate goto ${appUrl}`
-          );
+        // If TAURI_DEV_URL is explicitly set, navigate to it to ensure the frontend is
+        // rendered. Otherwise skip navigation — we can't guess the app's URL — and rely
+        // on the ping health check above.
+        const appUrl = process.env.TAURI_DEV_URL;
+        let webviewInfo = '';
+        if (appUrl) {
+          console.error(`Navigating WebView to ${appUrl} to reload frontend...`);
+          try {
+            await socketClient.sendCommand('navigate_webview', {
+              action: 'navigate',
+              window_label: 'main',
+              url: appUrl,
+            });
+            // Give the page time to load before the final health check
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            await socketClient.sendCommand('ping', { value: 'post-navigate-health-check' });
+            webviewInfo = ', and WebView reloaded';
+          } catch (navError) {
+            return createErrorResponse(
+              `Reconnected after restart but failed to reload the WebView: ${(navError as Error).message}. ` +
+              `Try manually: navigate goto ${appUrl}`
+            );
+          }
+        } else {
+          console.error('TAURI_DEV_URL not set; skipping post-restart WebView navigation.');
         }
 
         const method = restartMethod === 'force-kill' ? ' (via force-kill)' : '';
-        return createSuccessResponse(`Application restarted${method}, reconnected, and WebView reloaded successfully.`);
+        return createSuccessResponse(`Application restarted${method} and reconnected successfully${webviewInfo}.`);
       } catch (error) {
         const message = (error as Error).message;
         if (message.includes('connect') || message.includes('ECONNREFUSED') || message.includes('ENOENT')) {

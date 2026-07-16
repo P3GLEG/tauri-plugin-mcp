@@ -8,6 +8,9 @@ jobs:
   publish-npm:
     permissions:
       contents: read
+      # Mints the OIDC token npm trusted publishing exchanges for publish
+      # credentials — no NPM_TOKEN secret involved.
+      id-token: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,21 +21,20 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
+
+      # Trusted publishing requires npm >= 11.5.1
+      - run: npm install -g npm@latest
 
       # Guest JS bindings
       - run: pnpm install
       - run: pnpm build
       - run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # MCP server CLI
       - run: cd mcp-server-ts && pnpm install && pnpm build
       - run: cd mcp-server-ts && npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   github-release:
     runs-on: ubuntu-latest

@@ -3,6 +3,7 @@ import { registerTakeScreenshotTool } from "./take_screenshot.js";
 import { registerQueryPageTool } from "./query_page.js";
 import { registerClickTool } from "./click.js";
 import { registerTypeTextTool } from "./type_text.js";
+import { registerPressKeyTool } from "./press_key.js";
 import { registerMouseActionTool } from "./mouse_action.js";
 import { registerNavigateTool } from "./navigate.js";
 import { registerExecuteJsTool } from "./execute_js.js";
@@ -12,6 +13,7 @@ import { registerWaitForTool } from "./wait_for.js";
 import { registerRestartAppTool } from "./restart_app.js";
 import { registerQueryLogsTool } from "./query_logs.js";
 import { registerLogMarkTool } from "./log_mark.js";
+import { registerManageIpcTool } from "./manage_ipc.js";
 import { socketClient } from "./client.js";
 
 // Re-export the socket client for direct use
@@ -23,6 +25,7 @@ export function registerAllTools(server: McpServer) {
   registerQueryPageTool(server);
   registerClickTool(server);
   registerTypeTextTool(server);
+  registerPressKeyTool(server);
   registerMouseActionTool(server);
   registerNavigateTool(server);
   registerExecuteJsTool(server);
@@ -32,6 +35,7 @@ export function registerAllTools(server: McpServer) {
   registerRestartAppTool(server);
   registerQueryLogsTool(server);
   registerLogMarkTool(server);
+  registerManageIpcTool(server);
 }
 
 // Function to initialize socket connection (can be awaited before registering tools)

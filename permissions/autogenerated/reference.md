@@ -1,10 +1,11 @@
 ## Default Permission
 
-Allows the webview to forward console.* logs to the plugin's ring buffer.
+Allows the webview to forward console.* logs and observed IPC activity to the plugin's ring buffers.
 
 #### This default permission set includes the following:
 
 - `allow-push-log`
+- `allow-push-ipc`
 
 ## Permission Table
 
@@ -14,6 +15,32 @@ Allows the webview to forward console.* logs to the plugin's ring buffer.
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`mcp:allow-push-ipc`
+
+</td>
+<td>
+
+Enables the push_ipc command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mcp:deny-push-ipc`
+
+</td>
+<td>
+
+Denies the push_ipc command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>

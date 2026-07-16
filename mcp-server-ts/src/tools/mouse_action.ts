@@ -6,7 +6,7 @@ import { createErrorResponse, createSuccessResponse, logCommandParams } from "./
 export function registerMouseActionTool(server: McpServer) {
   server.tool(
     "mouse_action",
-    "Performs non-click mouse actions. 'hover' moves the cursor to coordinates (triggers hover effects). 'scroll' scrolls the page by direction/amount, to an element ref, or to top/bottom. 'drag' moves from start to end coordinates (best-effort, two sequential moves).",
+    "Performs non-click mouse actions. 'hover' moves the cursor to coordinates (native; if macOS Accessibility is not granted, falls back to synthetic pointer events — JS hover handlers fire but CSS :hover styles do not). 'scroll' scrolls the page by direction/amount, to an element ref (response reports whether the element landed in the viewport), or to top/bottom. 'drag' moves from start to end coordinates (best-effort, two sequential moves; requires Accessibility).",
     {
       action: z.enum(["hover", "scroll", "drag"]).describe("The mouse action: 'hover' to move cursor, 'scroll' to scroll page, 'drag' for drag gesture."),
       // hover / drag params
@@ -56,7 +56,42 @@ export function registerMouseActionTool(server: McpServer) {
             };
 
             logCommandParams('simulate_mouse_movement', payload);
-            await socketClient.sendCommand('simulate_mouse_movement', payload);
+            try {
+              await socketClient.sendCommand('simulate_mouse_movement', payload);
+            } catch (hoverError) {
+              const message = (hoverError as Error).message;
+              // Native injection needs macOS Accessibility. When it's not
+              // granted, fall back to synthetic pointer events dispatched at
+              // the target — triggers JS hover handlers (pointerover/
+              // mouseover/mousemove), though not CSS :hover styles.
+              // Relative moves need real cursor state, so no fallback there.
+              if (!message.includes('Accessibility') || params.relative) {
+                throw hoverError;
+              }
+              const x = Math.round(params.x);
+              const y = Math.round(params.y);
+              const code = `(() => {
+                const el = document.elementFromPoint(${x}, ${y});
+                if (!el) return 'no-element';
+                const opts = { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y}, view: window };
+                el.dispatchEvent(new PointerEvent('pointerover', opts));
+                el.dispatchEvent(new PointerEvent('pointerenter', { ...opts, bubbles: false }));
+                el.dispatchEvent(new PointerEvent('pointermove', opts));
+                el.dispatchEvent(new MouseEvent('mouseover', opts));
+                el.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+                el.dispatchEvent(new MouseEvent('mousemove', opts));
+                return el.tagName.toLowerCase();
+              })()`;
+              const result = await socketClient.sendCommand('execute_js', { code, window_label });
+              const tag = result && typeof result === 'object' ? (result as any).result : String(result);
+              if (tag === 'no-element') {
+                return createErrorResponse(`No element at (${x}, ${y}) to hover (synthetic fallback; native mouse unavailable without Accessibility).`);
+              }
+              return createSuccessResponse(
+                `Hovered <${tag}> at (${x}, ${y}) via synthetic pointer events ` +
+                `(native mouse unavailable without macOS Accessibility — JS hover handlers fired, CSS :hover styles will not).`
+              );
+            }
 
             return createSuccessResponse(
               `Moved mouse to (${Math.round(params.x)}, ${Math.round(params.y)})${params.relative ? ' (relative)' : ''}`

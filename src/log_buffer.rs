@@ -24,6 +24,13 @@ const MAX_MESSAGE_LEN: usize = 8192;
 /// from React render-loop / polling-callback log floods that would otherwise
 /// evict useful older entries.
 const COALESCE_WINDOW_MS: u64 = 1000;
+/// Cap on a single coalesce run: after this many repeats a new entry is
+/// started, so `since_id`-cursor consumers observe progress while a message
+/// keeps repeating.
+const MAX_COALESCE_REPEATS: u32 = 100;
+/// Cap on how long a single coalesce run may span (measured from the first
+/// occurrence in the run). After this, a new entry is started.
+const MAX_COALESCE_RUN_MS: u64 = 5000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -36,6 +43,7 @@ pub enum LogSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LogEntry {
     pub id: u64,
     /// Milliseconds since UNIX epoch.
@@ -51,6 +59,16 @@ pub struct LogEntry {
     /// occurrence; the latest is `ts + (repeat-1) * COALESCE_WINDOW_MS` max.
     #[serde(skip_serializing_if = "is_one", default = "default_repeat")]
     pub repeat: u32,
+    /// True when the entry is this plugin's own instrumentation (socket
+    /// command tracing, JS bridge logs). Hidden from queries by default so
+    /// the app's own logs aren't buried under MCP plumbing.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub plugin: bool,
+    /// Timestamp (ms since epoch) of the first occurrence in this entry's
+    /// coalesce run. Internal bookkeeping for capping run length; not
+    /// serialized.
+    #[serde(skip)]
+    first_ts: u64,
 }
 
 fn is_one(n: &u32) -> bool {
@@ -58,6 +76,18 @@ fn is_one(n: &u32) -> bool {
 }
 fn default_repeat() -> u32 {
     1
+}
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Detect the plugin's own instrumentation: Rust logs from this crate's
+/// modules (all prefixed "[TAURI_MCP]") and the JS bridge's console output
+/// (prefixed "TAURI-PLUGIN-MCP").
+fn is_plugin_chatter(target: Option<&str>, message: &str) -> bool {
+    target.is_some_and(|t| t.starts_with("tauri_plugin_mcp"))
+        || message.contains("[TAURI_MCP]")
+        || message.contains("TAURI-PLUGIN-MCP")
 }
 
 pub struct LogBuffer {
@@ -91,20 +121,26 @@ impl LogBuffer {
             Some(n) if !n.is_empty() => format!("[mark:{}] {}", tag, n),
             _ => format!("[mark:{}]", tag),
         };
-        self.push(
+        // Markers are never coalesced, so `push` always returns a fresh id
+        // here. Using the returned id (instead of re-deriving it from
+        // `next_id`) avoids racing with concurrent pushes.
+        let id = self.push(
             "info",
             LogSource::Marker,
             Some(tag.to_string()),
             message,
         );
-        // The id we just assigned is next_id - 1.
-        let id = self.next_id.load(Ordering::Relaxed).saturating_sub(1);
         let mut m = self.markers_lock();
         if m.len() >= MARKERS_CAPACITY {
             m.pop_front();
         }
         m.push_back((id, tag.to_string()));
         id
+    }
+
+    /// Number of markers recorded with this tag (for begin/end pairing hints).
+    pub fn marker_count(&self, tag: &str) -> usize {
+        self.markers_lock().iter().filter(|(_, t)| t == tag).count()
     }
 
     /// Look up the (begin_id, end_id_or_now) bounds for a `between` query.
@@ -141,7 +177,10 @@ impl LogBuffer {
         self.markers.lock()
     }
 
-    pub fn push(&self, level: &str, source: LogSource, target: Option<String>, message: String) {
+    /// Push an entry into the buffer. Returns the id of the entry the
+    /// message landed in — either a freshly assigned id, or the id of the
+    /// existing entry when the message was coalesced into it.
+    pub fn push(&self, level: &str, source: LogSource, target: Option<String>, message: String) -> u64 {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -160,6 +199,9 @@ impl LogBuffer {
         // Coalesce: if the most recent entry is the same level+source+message
         // within COALESCE_WINDOW_MS, just bump its repeat counter and refresh ts.
         // Marker entries are never coalesced — each mark is meaningful.
+        // A run is capped (MAX_COALESCE_REPEATS repeats or MAX_COALESCE_RUN_MS
+        // from its first occurrence) so `since_id`-cursor consumers still
+        // observe new ids while a message keeps repeating.
         if !matches!(source, LogSource::Marker) {
             if let Some(last) = guard.back_mut() {
                 if last.level == level
@@ -167,15 +209,19 @@ impl LogBuffer {
                     && last.message == message
                     && last.target.as_deref() == target.as_deref()
                     && ts.saturating_sub(last.ts) <= COALESCE_WINDOW_MS
+                    && last.repeat < MAX_COALESCE_REPEATS
+                    && ts.saturating_sub(last.first_ts) <= MAX_COALESCE_RUN_MS
                 {
                     last.repeat = last.repeat.saturating_add(1);
                     last.ts = ts;
-                    return;
+                    return last.id;
                 }
             }
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let plugin = !matches!(source, LogSource::Marker)
+            && is_plugin_chatter(target.as_deref(), &message);
         let entry = LogEntry {
             id,
             ts,
@@ -184,6 +230,8 @@ impl LogBuffer {
             target,
             message,
             repeat: 1,
+            first_ts: ts,
+            plugin,
         };
 
         if guard.len() >= self.capacity {
@@ -191,6 +239,7 @@ impl LogBuffer {
             self.dropped_total.fetch_add(1, Ordering::Relaxed);
         }
         guard.push_back(entry);
+        id
     }
 
     /// Public convenience for hosts that want to forward their existing
@@ -226,6 +275,7 @@ impl LogBuffer {
         let level_filter = q.level.as_deref().and_then(parse_level_threshold);
         let lc_contains = q.contains.as_ref().map(|s| s.to_lowercase());
         let include_markers = q.include_markers.unwrap_or(false);
+        let include_plugin = q.include_plugin.unwrap_or(false);
 
         // If `between` was requested but no markers exist, return empty with
         // a hint in the diagnostics.
@@ -255,6 +305,10 @@ impl LogBuffer {
             .filter(|e| {
                 // Hide marker sentinels from regular output unless explicitly asked.
                 if !include_markers && matches!(e.source, LogSource::Marker) {
+                    return false;
+                }
+                // Hide the plugin's own instrumentation unless explicitly asked.
+                if !include_plugin && e.plugin {
                     return false;
                 }
                 if let Some(b) = between_lower {
@@ -328,7 +382,7 @@ impl LogBuffer {
 
 fn count_entries(entries: &VecDeque<LogEntry>) -> LogCounts {
     let (mut errors, mut warns, mut infos, mut debugs, mut traces) = (0u64, 0u64, 0u64, 0u64, 0u64);
-    let (mut rust_count, mut js_count, mut marker_count) = (0u64, 0u64, 0u64);
+    let (mut rust_count, mut js_count, mut marker_count, mut plugin_count) = (0u64, 0u64, 0u64, 0u64);
     for e in entries.iter() {
         match e.level.as_str() {
             "error" => errors += 1,
@@ -343,6 +397,9 @@ fn count_entries(entries: &VecDeque<LogEntry>) -> LogCounts {
             LogSource::Js => js_count += 1,
             LogSource::Marker => marker_count += 1,
         }
+        if e.plugin {
+            plugin_count += 1;
+        }
     }
     LogCounts {
         error: errors,
@@ -353,6 +410,7 @@ fn count_entries(entries: &VecDeque<LogEntry>) -> LogCounts {
         rust: rust_count,
         js: js_count,
         marker: marker_count,
+        plugin: plugin_count,
     }
 }
 
@@ -371,6 +429,8 @@ pub struct LogQuery {
     pub between: Option<String>,
     /// Include `LogSource::Marker` sentinel entries in the result. Default false.
     pub include_markers: Option<bool>,
+    /// Include the plugin's own instrumentation entries. Default false.
+    pub include_plugin: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -394,6 +454,7 @@ pub struct LogQueryResult {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct LogCounts {
     pub error: u64,
     pub warn: u64,
@@ -403,6 +464,8 @@ pub struct LogCounts {
     pub rust: u64,
     pub js: u64,
     pub marker: u64,
+    /// Plugin-internal entries in the buffer (hidden from queries by default).
+    pub plugin: u64,
 }
 
 fn parse_level(s: &str) -> Option<Level> {
@@ -474,6 +537,14 @@ impl Log for BufferLogger {
 }
 
 static LOGGER_INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LOGGER_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the ring-buffer logger actually owns the global `log` slot.
+/// When true, Rust logs are already captured directly and the `log://log`
+/// event listener must not also push them (double capture).
+pub fn logger_is_active() -> bool {
+    LOGGER_ACTIVE.load(Ordering::Acquire)
+}
 
 /// Install the ring-buffer logger as the global `log` logger. Safe to call
 /// multiple times — only the first call has effect. If another logger is
@@ -486,6 +557,7 @@ pub fn install_logger() {
     let logger = Box::new(BufferLogger { delegate: None });
     if log::set_boxed_logger(logger).is_ok() {
         log::set_max_level(log::LevelFilter::Debug);
+        LOGGER_ACTIVE.store(true, Ordering::Release);
     } else {
         // Another logger is in place; we'll only capture JS-side logs.
         eprintln!(
@@ -635,6 +707,21 @@ mod tests {
     }
 
     #[test]
+    fn plugin_chatter_hidden_by_default() {
+        let buf = LogBuffer::new(50);
+        buf.push("info", LogSource::Rust, Some("tauri_plugin_mcp::socket_server".into()), "[TAURI_MCP] Received command: ping".into());
+        buf.push("trace", LogSource::Js, None, "localhost/ TAURI-PLUGIN-MCP: Received wait-for".into());
+        buf.push("info", LogSource::Js, None, "AutoSavePlugin: saved".into());
+        let r = buf.query(&LogQuery::default());
+        assert_eq!(r.entries.len(), 1);
+        assert_eq!(r.entries[0].message, "AutoSavePlugin: saved");
+        assert_eq!(r.counts.plugin, 2);
+
+        let r2 = buf.query(&LogQuery { include_plugin: Some(true), ..Default::default() });
+        assert_eq!(r2.entries.len(), 3);
+    }
+
+    #[test]
     fn coalesces_consecutive_duplicates() {
         let buf = LogBuffer::new(50);
         for _ in 0..100 {
@@ -643,6 +730,32 @@ mod tests {
         let r = buf.query(&LogQuery::default());
         assert_eq!(r.entries.len(), 1, "100 identical pushes should coalesce");
         assert_eq!(r.entries[0].repeat, 100);
+    }
+
+    #[test]
+    fn coalesce_run_capped_so_cursors_see_progress() {
+        let buf = LogBuffer::new(50);
+        for _ in 0..250 {
+            buf.push("warn", LogSource::Js, None, "render-loop spam".into());
+        }
+        let r = buf.query(&LogQuery::default());
+        // Runs are capped at MAX_COALESCE_REPEATS, so 250 pushes yield
+        // multiple entries (new ids) instead of one ever-growing entry.
+        assert_eq!(r.entries.len(), 3);
+        assert_eq!(r.entries[0].repeat, MAX_COALESCE_REPEATS);
+        assert_eq!(r.entries[1].repeat, MAX_COALESCE_REPEATS);
+        assert_eq!(r.entries[2].repeat, 50);
+        assert!(r.entries[0].id < r.entries[1].id);
+    }
+
+    #[test]
+    fn push_returns_assigned_or_coalesced_id() {
+        let buf = LogBuffer::new(50);
+        let a = buf.push("info", LogSource::Js, None, "x".into());
+        let b = buf.push("info", LogSource::Js, None, "x".into());
+        assert_eq!(a, b, "coalesced push returns the existing entry id");
+        let c = buf.push("info", LogSource::Js, None, "y".into());
+        assert!(c > a);
     }
 
     #[test]

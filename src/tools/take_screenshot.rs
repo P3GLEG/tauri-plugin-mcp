@@ -3,7 +3,7 @@ use crate::shared::ScreenshotParams;
 use base64::Engine;
 use image::DynamicImage;
 use serde_json::Value;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use log::info;
 use crate::TauriMcpExt;
 use crate::models::ScreenshotRequest;
@@ -131,12 +131,96 @@ pub fn process_image(dynamic_image: DynamicImage, params: &ScreenshotParams) -> 
     Ok(format!("data:image/jpeg;base64,{}", base64_data))
 }
 
+/// Return the user's home directory, if it can be determined.
+fn home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    let var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let var = "HOME";
+    std::env::var_os(var).map(std::path::PathBuf::from)
+}
+
+/// Canonicalize a path that may not exist yet: canonicalize the deepest
+/// existing ancestor and re-append the non-existing tail. This resolves
+/// symlinked roots (e.g. /tmp -> /private/tmp on macOS) so containment
+/// checks compare like with like.
+fn canonicalize_lenient(path: &std::path::Path) -> std::path::PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+
+    while !existing.exists() {
+        match existing.file_name() {
+            Some(name) => {
+                tail.push(name.to_os_string());
+                if !existing.pop() {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+
+    let mut resolved = existing.canonicalize().unwrap_or(existing);
+    for part in tail.iter().rev() {
+        resolved.push(part);
+    }
+    resolved
+}
+
+/// Validate a caller-supplied screenshot output directory.
+///
+/// Rejects paths containing `..` components and requires the resolved path
+/// to be inside either the system temp directory or the user's home
+/// directory, preventing arbitrary filesystem writes.
+pub fn validate_output_dir(output_dir: &str) -> Result<()> {
+    use std::path::{Component, Path};
+
+    let path = Path::new(output_dir);
+
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(Error::WindowOperationFailed(format!(
+            "Invalid output_dir '{}': path must not contain '..' components",
+            output_dir
+        )));
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| {
+                Error::WindowOperationFailed(format!(
+                    "Failed to resolve output_dir '{}': {}",
+                    output_dir, e
+                ))
+            })?
+            .join(path)
+    };
+    let resolved = canonicalize_lenient(&absolute);
+
+    let mut allowed_roots = vec![canonicalize_lenient(&std::env::temp_dir())];
+    if let Some(home) = home_dir() {
+        allowed_roots.push(canonicalize_lenient(&home));
+    }
+
+    if allowed_roots.iter().any(|root| resolved.starts_with(root)) {
+        Ok(())
+    } else {
+        Err(Error::WindowOperationFailed(format!(
+            "Invalid output_dir '{}': must be inside the system temp directory or your home directory",
+            output_dir
+        )))
+    }
+}
+
 /// Process image and write to a file on disk. Returns the file path.
 pub fn process_image_to_file(
     dynamic_image: DynamicImage,
     params: &ScreenshotParams,
     output_dir: &str,
 ) -> Result<String> {
+    validate_output_dir(output_dir)?;
+
     let quality = params.quality.unwrap_or(70) as u8;
     let max_width = params.max_width.map(|w| w as u32);
     let max_size_bytes = params
@@ -188,24 +272,43 @@ pub async fn handle_take_screenshot<R: Runtime>(
     let payload: ScreenshotRequest = serde_json::from_value(payload)
         .map_err(|e| Error::Anyhow(format!("Invalid payload for takeScreenshot: {}", e)))?;
 
+    // Reject unsafe output directories up front with a clear error
+    if let Some(output_dir) = &payload.output_dir {
+        if let Err(e) = validate_output_dir(output_dir) {
+            return Ok(SocketResponse::err(None, e.to_string()));
+        }
+    }
+
+    // A hidden window still captures — but as a blank frame. Detect it up
+    // front so the response can warn instead of silently returning a blank
+    // image the agent might misread as "the app rendered nothing".
+    let window_label = payload.window_label.clone();
+    let window_visible = app
+        .webview_windows()
+        .get(&window_label)
+        .and_then(|w| w.is_visible().ok());
+
     // Call the async method
     let result = app.tauri_mcp().take_screenshot_async(payload).await;
     match result {
         Ok(response) => {
-            let data = serde_json::to_value(response)
+            let mut data = serde_json::to_value(response)
                 .map_err(|e| Error::Anyhow(format!("Failed to serialize response: {}", e)))?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(data),
-                error: None,
-                id: None,
-            })
+            if window_visible == Some(false) {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("windowVisible".into(), serde_json::json!(false));
+                    obj.insert(
+                        "warning".into(),
+                        serde_json::json!(format!(
+                            "Window '{}' is not visible — the capture is likely blank. \
+                             Show it first with manage_window(action='show', window_label='{}').",
+                            window_label, window_label
+                        )),
+                    );
+                }
+            }
+            Ok(SocketResponse::ok(None, Some(data)))
         }
-        Err(e) => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(e.to_string()),
-            id: None,
-        }),
+        Err(e) => Ok(SocketResponse::err(None, e.to_string())),
     }
 }

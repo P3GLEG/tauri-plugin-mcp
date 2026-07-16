@@ -30,15 +30,12 @@ pub async fn handle_log_mark<R: Runtime>(
     }
 
     let entry_id = log_buffer::global().mark(&req.id, req.note.as_deref());
+    let marker_count = log_buffer::global().marker_count(&req.id);
     info!("[TAURI_MCP] log_mark id={} entry_id={}", req.id, entry_id);
 
-    Ok(SocketResponse {
-        success: true,
-        data: Some(serde_json::json!({
+    Ok(SocketResponse::ok(None, Some(serde_json::json!({
             "id": req.id,
             "entryId": entry_id,
-        })),
-        error: None,
-        id: None,
-    })
+            "markerCount": marker_count,
+        }))))
 }

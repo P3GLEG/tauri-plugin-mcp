@@ -16,7 +16,7 @@ export function registerTakeScreenshotTool(server: McpServer) {
     "take_screenshot",
     "Captures a screenshot of an application window. By default saves the full image to disk and returns a small thumbnail inline (optimized for token efficiency). Set inline=true to get the full image as base64 instead. Read-only, does not modify application state. WARNING: Screenshot pixel coordinates do NOT match the CSS pixel coordinates used by click/hover/type_text tools. Do NOT visually estimate click targets from screenshots. Instead, use query_page with mode='find_element' to get accurate coordinates for clicking.",
     {
-      window_label: z.string().default("main").describe("The identifier for the window to capture. This could be the window's visible title text or a unique internal label if available. Ensure this label accurately targets the desired window. Defaults to 'main' if not specified."),
+      window_label: z.string().default("main").describe("Window to capture. Defaults to 'main'."),
       quality: z.number().min(1).max(100).optional().describe("JPEG quality (1-100). Lower values produce smaller images. Default: 70."),
       max_width: z.number().min(100).optional().describe("Maximum image width in pixels. Images wider than this will be resized. Default: 1024."),
       max_size_mb: z.number().min(0.1).optional().describe("Maximum file size in MB. Image will be compressed to fit. Default: 1.0."),
@@ -56,6 +56,8 @@ export function registerTakeScreenshotTool(server: McpServer) {
 
         const base64Data = extractBase64Data(result);
         const filePath = extractFilePath(result);
+        const visibilityWarning: string | undefined =
+          result && typeof result === 'object' ? (result as any).warning : undefined;
 
         // Determine audience annotations
         const annotations = audience === "user"
@@ -80,20 +82,28 @@ export function registerTakeScreenshotTool(server: McpServer) {
           content.push(createEmbeddedResourceResponse(filePath).content[0]);
           // Text reference
           content.push({ type: "text" as const, text: `Full screenshot saved to: ${filePath}` });
+          if (visibilityWarning) content.push({ type: "text" as const, text: `WARNING: ${visibilityWarning}` });
           return { isError: false, content };
         }
 
         // File-only mode: no inline data, just file path
         if (!base64Data && filePath) {
-          return createEmbeddedResourceResponse(filePath);
+          const response = createEmbeddedResourceResponse(filePath);
+          if (visibilityWarning) {
+            (response.content as any[]).push({ type: "text" as const, text: `WARNING: ${visibilityWarning}` });
+          }
+          return response;
         }
 
         // Inline mode: base64 data, no file
         if (base64Data) {
-          if (annotations) {
-            return createAnnotatedImageResponse(base64Data, 'image/jpeg', annotations);
+          const response = annotations
+            ? createAnnotatedImageResponse(base64Data, 'image/jpeg', annotations)
+            : createImageResponse(base64Data, 'image/jpeg');
+          if (visibilityWarning) {
+            (response.content as any[]).push({ type: "text" as const, text: `WARNING: ${visibilityWarning}` });
           }
-          return createImageResponse(base64Data, 'image/jpeg');
+          return response;
         }
 
         console.error('Failed to extract base64 data from response:', JSON.stringify(result));

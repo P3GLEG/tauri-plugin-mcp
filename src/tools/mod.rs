@@ -17,7 +17,9 @@ pub mod local_storage;
 pub mod mouse_movement;
 pub mod navigate_webview;
 pub mod log_mark;
+pub mod manage_ipc;
 pub mod ping;
+pub mod push_ipc;
 pub mod push_log;
 pub mod query_logs;
 pub mod restart_app;
@@ -40,6 +42,7 @@ pub use local_storage::handle_get_local_storage;
 pub use mouse_movement::handle_simulate_mouse_movement;
 pub use navigate_webview::handle_navigate_webview;
 pub use log_mark::handle_log_mark;
+pub use manage_ipc::handle_manage_ipc;
 pub use ping::handle_ping;
 pub use query_logs::handle_query_logs;
 pub use restart_app::handle_restart_app;
@@ -47,8 +50,9 @@ pub use take_screenshot::handle_take_screenshot;
 pub use text_input::handle_simulate_text_input;
 pub use webview::{
     handle_fill_form, handle_get_dom, handle_get_element_position, handle_get_page_map,
-    handle_get_page_state, handle_navigate_back, handle_scroll_page, handle_send_text_to_element,
-    handle_type_into_focused, handle_wait_for,
+    handle_get_page_state, handle_navigate_back, handle_press_key, handle_scroll_page,
+    handle_send_text_to_element, handle_set_file_input, handle_type_into_focused,
+    handle_wait_for,
 };
 pub use webview_state::handle_manage_webview_state;
 pub use window_manager::handle_manage_window;
@@ -60,7 +64,7 @@ pub async fn handle_command<R: Runtime>(
     command: &str,
     payload: Value,
 ) -> crate::Result<SocketResponse> {
-    info!("[TAURI_MCP] Received command: {}", command);
+    debug!("[TAURI_MCP] Received command: {}", command);
     debug!(
         "[TAURI_MCP] Command {} payload: {}",
         command,
@@ -93,24 +97,17 @@ pub async fn handle_command<R: Runtime>(
         #[cfg(feature = "devtools")]
         commands::MANAGE_DEVTOOLS => handle_manage_devtools(app, payload).await,
         #[cfg(not(feature = "devtools"))]
-        commands::MANAGE_DEVTOOLS => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some("manage_devtools requires the 'devtools' feature: tauri-plugin-mcp = { features = [\"devtools\"] }".to_string()),
-            id: None,
-        }),
+        commands::MANAGE_DEVTOOLS => Ok(SocketResponse::err(None, "manage_devtools requires the 'devtools' feature: tauri-plugin-mcp = { features = [\"devtools\"] }".to_string())),
         commands::MANAGE_ZOOM => handle_manage_zoom(app, payload).await,
         commands::MANAGE_WEBVIEW_STATE => handle_manage_webview_state(app, payload).await,
         commands::TYPE_INTO_FOCUSED => handle_type_into_focused(app, payload).await,
+        commands::PRESS_KEY => handle_press_key(app, payload).await,
+        commands::SET_FILE_INPUT => handle_set_file_input(app, payload).await,
+        commands::MANAGE_IPC => handle_manage_ipc(app, payload).await,
         commands::RESTART_APP => handle_restart_app(app, payload).await,
         commands::QUERY_LOGS => handle_query_logs(app, payload).await,
         commands::LOG_MARK => handle_log_mark(app, payload).await,
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!("Unknown command: {}", command)),
-            id: None,
-        }),
+        _ => Ok(SocketResponse::err(None, format!("Unknown command: {}", command))),
     };
 
     // Log the response before returning it
@@ -120,7 +117,7 @@ pub async fn handle_command<R: Runtime>(
         } else {
             "FAILURE"
         };
-        info!(
+        debug!(
             "[TAURI_MCP] Command {} completed with status: {}",
             command, success_str
         );
@@ -184,6 +181,9 @@ mod tests {
             commands::MANAGE_ZOOM,
             commands::MANAGE_WEBVIEW_STATE,
             commands::TYPE_INTO_FOCUSED,
+            commands::PRESS_KEY,
+            commands::SET_FILE_INPUT,
+            commands::MANAGE_IPC,
             commands::RESTART_APP,
             commands::QUERY_LOGS,
             commands::LOG_MARK,
@@ -193,6 +193,6 @@ mod tests {
         for cmd in &all_commands {
             assert!(seen.insert(*cmd), "Duplicate command constant: {}", cmd);
         }
-        assert_eq!(seen.len(), 28, "Expected 28 unique commands");
+        assert_eq!(seen.len(), 31, "Expected 31 unique commands");
     }
 }

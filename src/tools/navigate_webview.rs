@@ -38,32 +38,17 @@ pub async fn handle_navigate_webview<R: Runtime>(
             webview.navigate(parsed_url).map_err(|e| {
                 crate::error::Error::Anyhow(format!("Failed to navigate: {}", e))
             })?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"action": "navigate", "url": url})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"action": "navigate", "url": url}))))
         }
         "reload" => {
             webview.eval("location.reload()").map_err(|e| {
                 crate::error::Error::Anyhow(format!("Failed to reload: {}", e))
             })?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"action": "reload"})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"action": "reload"}))))
         }
         "get_url" => {
             let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"url": url})),
-                error: None,
-                id: None,
-            })
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"url": url}))))
         }
         "back" | "forward" => {
             let emit_target = get_emit_target(app, &window_label);
@@ -81,22 +66,12 @@ pub async fn handle_navigate_webview<R: Runtime>(
                 std::time::Duration::from_secs(5),
             ).await {
                 Ok(result) => Ok(parse_js_response(&result)),
-                Err(e) => Ok(SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(format!("Timeout waiting for navigation: {}", e)),
-                    id: None,
-                }),
+                Err(e) => Ok(SocketResponse::err(None, format!("Timeout waiting for navigation: {}", e))),
             }
         }
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!(
+        _ => Ok(SocketResponse::err(None, format!(
                 "Unknown action '{}'. Valid actions: navigate, reload, get_url, back, forward",
                 parsed.action
-            )),
-            id: None,
-        }),
+            ))),
     }
 }

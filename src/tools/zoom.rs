@@ -1,10 +1,20 @@
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Runtime};
 
 use crate::desktop::{get_emit_target, get_webview_for_eval};
 use crate::socket_server::SocketResponse;
 use crate::tools::webview::{emit_and_wait, parse_js_response};
+
+/// Last zoom scale set through this tool, per window label. The webview
+/// API has no zoom getter — devicePixelRatio only reflects zoom indirectly
+/// (baseline DPR × zoom), so we remember what we set to report it back.
+fn zoom_factors() -> &'static Mutex<HashMap<String, f64>> {
+    static ZOOM: OnceLock<Mutex<HashMap<String, f64>>> = OnceLock::new();
+    ZOOM.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Deserialize)]
 struct ZoomPayload {
@@ -35,12 +45,10 @@ pub async fn handle_manage_zoom<R: Runtime>(
             webview.set_zoom(scale).map_err(|e| {
                 crate::error::Error::Anyhow(format!("Failed to set zoom: {}", e))
             })?;
-            Ok(SocketResponse {
-                success: true,
-                data: Some(serde_json::json!({"action": "set", "scale": scale})),
-                error: None,
-                id: None,
-            })
+            if let Ok(mut m) = zoom_factors().lock() {
+                m.insert(window_label.clone(), scale);
+            }
+            Ok(SocketResponse::ok(None, Some(serde_json::json!({"action": "set", "scale": scale}))))
         }
         "get" => {
             let emit_target = get_emit_target(app, &window_label);
@@ -53,23 +61,34 @@ pub async fn handle_manage_zoom<R: Runtime>(
                 serde_json::json!({"action": "get"}),
                 std::time::Duration::from_secs(5),
             ).await {
-                Ok(result) => Ok(parse_js_response(&result)),
-                Err(e) => Ok(SocketResponse {
-                    success: false,
-                    data: None,
-                    error: Some(format!("Timeout waiting for zoom level: {}", e)),
-                    id: None,
-                }),
+                Ok(result) => {
+                    let mut response = parse_js_response(&result);
+                    // Enrich with the zoom factor last set through this tool
+                    // (webviews expose no zoom getter; devicePixelRatio alone
+                    // forces the caller to know the baseline DPR).
+                    if response.success {
+                        let factor = zoom_factors()
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(&window_label).copied());
+                        if let Some(data) = response.data.as_mut().and_then(|d| d.as_object_mut()) {
+                            match factor {
+                                Some(f) => data.insert("zoomFactor".into(), serde_json::json!(f)),
+                                None => data.insert(
+                                    "zoomFactor".into(),
+                                    serde_json::json!("unknown (not set via this tool; default 1.0 unless the app changed it)"),
+                                ),
+                            };
+                        }
+                    }
+                    Ok(response)
+                }
+                Err(e) => Ok(SocketResponse::err(None, format!("Timeout waiting for zoom level: {}", e))),
             }
         }
-        _ => Ok(SocketResponse {
-            success: false,
-            data: None,
-            error: Some(format!(
+        _ => Ok(SocketResponse::err(None, format!(
                 "Unknown action '{}'. Valid actions: set, get",
                 parsed.action
-            )),
-            id: None,
-        }),
+            ))),
     }
 }

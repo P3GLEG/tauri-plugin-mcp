@@ -1,4 +1,29 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::socket_server::SocketResponse;
+
+impl SocketResponse {
+    /// Build a successful response with an optional data payload.
+    pub fn ok(id: Option<String>, data: Option<Value>) -> Self {
+        Self {
+            success: true,
+            data,
+            error: None,
+            id,
+        }
+    }
+
+    /// Build a failed response with an error message.
+    pub fn err(id: Option<String>, error: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            data: None,
+            error: Some(error.into()),
+            id,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -13,6 +13,23 @@ pub async fn handle_restart_app<R: Runtime>(
     let request: RestartAppRequest = serde_json::from_value(payload)
         .map_err(|e| Error::Anyhow(format!("Invalid payload for restart_app: {}", e)))?;
 
+    // In dev mode, restart() re-execs the binary OUTSIDE the `tauri dev`
+    // supervisor: the supervisor sees its child exit, tears down the dev
+    // server, and the relaunched process is left orphaned pointing at a dead
+    // devUrl. The result is a dead app that briefly looked healthy. Refuse
+    // loudly instead of pretending this works.
+    if tauri::is_dev() {
+        return Ok(SocketResponse::err(
+            None,
+            "restart_app is not supported in dev mode: tauri::process::restart() re-execs \
+             the app outside the `tauri dev` supervisor, which then shuts down the dev \
+             server and kills the relaunched app. Ask the user to restart their dev \
+             command (e.g. `pnpm tauri dev`) instead. To reload the frontend without a \
+             process restart, use navigate(action='reload')."
+                .to_string(),
+        ));
+    }
+
     // Clamp delay_ms to 100-5000, default 500
     let delay_ms = request.delay_ms.unwrap_or(500).clamp(100, 5000);
 
@@ -27,12 +44,7 @@ pub async fn handle_restart_app<R: Runtime>(
         app_handle.restart();
     });
 
-    Ok(SocketResponse {
-        success: true,
-        data: Some(serde_json::json!({
+    Ok(SocketResponse::ok(None, Some(serde_json::json!({
             "message": format!("Restarting application in {}ms", delay_ms)
-        })),
-        error: None,
-        id: None,
-    })
+        }))))
 }
