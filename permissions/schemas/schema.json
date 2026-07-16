@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the push_ipc command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-push-ipc",
+          "markdownDescription": "Enables the push_ipc command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the push_ipc command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-push-ipc",
+          "markdownDescription": "Denies the push_ipc command without any pre-configured scope."
+        },
+        {
           "description": "Enables the push_log command without any pre-configured scope.",
           "type": "string",
           "const": "allow-push-log",
@@ -307,10 +319,10 @@
           "markdownDescription": "Denies the push_log command without any pre-configured scope."
         },
         {
-          "description": "Allows the webview to forward console.* logs to the plugin's ring buffer.\n#### This default permission set includes:\n\n- `allow-push-log`",
+          "description": "Allows the webview to forward console.* logs and observed IPC activity to the plugin's ring buffers.\n#### This default permission set includes:\n\n- `allow-push-log`\n- `allow-push-ipc`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows the webview to forward console.* logs to the plugin's ring buffer.\n#### This default permission set includes:\n\n- `allow-push-log`"
+          "markdownDescription": "Allows the webview to forward console.* logs and observed IPC activity to the plugin's ring buffers.\n#### This default permission set includes:\n\n- `allow-push-log`\n- `allow-push-ipc`"
         }
       ]
     }
