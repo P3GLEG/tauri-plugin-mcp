@@ -4,7 +4,7 @@ use std::sync::{mpsc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tauri::{Runtime, Webview};
-use log::debug;
+use log::{debug, warn};
 
 use crate::error::Error;
 use super::{InputResult, MouseButton, MouseParams, TextParams, TextResult};
@@ -224,6 +224,16 @@ unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
 }
 
+/// A mouse button held open by a `mouse_down`-only call, plus the last
+/// position it was posted at so it can be released at the same point.
+#[derive(Clone, Copy)]
+struct PressedButton {
+    /// CG mouse button number (CG_MOUSE_BUTTON_*).
+    button: i32,
+    /// Global position of the most recent down/drag event for this button.
+    position: CGPoint,
+}
+
 /// Which CG mouse button is currently held by a `mouse_down`-only call,
 /// keyed by NSWindow window number (absent = none held for that window).
 /// Keying per window keeps interleaved drag operations across different
@@ -231,14 +241,39 @@ unsafe extern "C" {
 /// during a drag are posted as *Dragged events (real HID semantics) and so
 /// a `click`/`mouse_up` always clears the pressed state — a synthetic
 /// mouseDown is never left unpaired by the `click` path within a single
-/// dispatch.
-static PRESSED_CG_BUTTONS: LazyLock<Mutex<HashMap<i64, i32>>> =
+/// dispatch. `release_held_buttons()` drains this on connection close so an
+/// interrupted drag can't leave the real cursor's button physically pressed.
+static PRESSED_CG_BUTTONS: LazyLock<Mutex<HashMap<i64, PressedButton>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn pressed_cg_buttons() -> MutexGuard<'static, HashMap<i64, i32>> {
+fn pressed_cg_buttons() -> MutexGuard<'static, HashMap<i64, PressedButton>> {
     PRESSED_CG_BUTTONS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Force-release any mouse buttons still held open by `mouse_down`-only calls.
+///
+/// A drag is expressed as `mouse_down` -> `move`* -> `mouse_up` across separate
+/// requests. Because `CGEventPost` drives the real window-server input state, a
+/// `mouse_down` whose paired `mouse_up` never arrives — the client crashed,
+/// disconnected, or panicked mid-drag — leaves the physical mouse button
+/// pressed, wedging the user's actual cursor. Call this when a client
+/// connection ends to post the matching button-up for anything still held.
+pub fn release_held_buttons() {
+    let mut held = pressed_cg_buttons();
+    for (window_number, pressed) in held.drain() {
+        let up_type = match pressed.button as u32 {
+            CG_MOUSE_BUTTON_RIGHT => CG_EVENT_RIGHT_MOUSE_UP,
+            CG_MOUSE_BUTTON_CENTER => CG_EVENT_OTHER_MOUSE_UP,
+            _ => CG_EVENT_LEFT_MOUSE_UP,
+        };
+        warn!(
+            "[NATIVE_INPUT] Releasing unpaired mouse button {} held for window {} (interrupted drag)",
+            pressed.button, window_number
+        );
+        post_mouse_event(up_type, pressed.position, pressed.button as u32, 1);
+    }
 }
 
 /// Keep injected coordinates this many points away from the window's
@@ -435,7 +470,7 @@ pub fn inject_mouse<R: Runtime>(
     // with the held button so drag semantics are preserved.
     let held = pressed_cg_buttons()
         .get(&window_number)
-        .copied()
+        .map(|p| p.button)
         .unwrap_or(-1);
     if held >= 0 {
         let (drag_type, drag_button) = match held as u32 {
@@ -444,6 +479,11 @@ pub fn inject_mouse<R: Runtime>(
             _ => (CG_EVENT_LEFT_MOUSE_DRAGGED, CG_MOUSE_BUTTON_LEFT),
         };
         post_mouse_event(drag_type, global, drag_button, 0);
+        // Refresh the held position so a force-release lands at the last
+        // known drag point rather than the original mouse_down location.
+        if let Some(pressed) = pressed_cg_buttons().get_mut(&window_number) {
+            pressed.position = global;
+        }
     } else {
         post_mouse_event(CG_EVENT_MOUSE_MOVED, global, cg_button, 0);
     }
@@ -460,7 +500,10 @@ pub fn inject_mouse<R: Runtime>(
         // no longer wedge a nested run loop, but callers MUST follow up
         // with mouse_up; PRESSED_CG_BUTTONS tracks the debt per window.
         post_mouse_event(down_type, global, cg_button, 1);
-        pressed_cg_buttons().insert(window_number, cg_button as i32);
+        pressed_cg_buttons().insert(
+            window_number,
+            PressedButton { button: cg_button as i32, position: global },
+        );
     } else if mouse_up {
         post_mouse_event(up_type, global, cg_button, 1);
         pressed_cg_buttons().remove(&window_number);

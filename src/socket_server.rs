@@ -509,6 +509,20 @@ where
 {
     info!("[TAURI_MCP] Handling new client connection");
 
+    // A `mouse_down`-only request (the start of a drag) leaves an OS-level
+    // mouse button held until the paired `mouse_up` arrives. If this client
+    // vanishes mid-drag — clean disconnect, pipe error, or task abort on
+    // server shutdown — that button would stay physically pressed and wedge
+    // the user's real cursor. This guard force-releases any still-held button
+    // on every exit path of the connection.
+    struct ButtonReleaseGuard;
+    impl Drop for ButtonReleaseGuard {
+        fn drop(&mut self) {
+            crate::native_input::release_held_buttons();
+        }
+    }
+    let _button_guard = ButtonReleaseGuard;
+
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 

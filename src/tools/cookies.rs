@@ -73,7 +73,8 @@ pub async fn handle_manage_cookies<R: Runtime>(
         // "clear_all" is kept as a deprecated alias for backwards compatibility.
         "clear_all_browsing_data" | "clear_all" => match webview.clear_all_browsing_data() {
             Ok(_) => Ok(SocketResponse::ok(None, Some(serde_json::json!({
-                    "cleared": "all_browsing_data",
+                    "cleared": true,
+                    "scope": "all_browsing_data",
                     "note": "All browsing data was cleared (cookies, localStorage, IndexedDB, caches), not just cookies.",
                 })))),
             Err(e) => Ok(SocketResponse::err(None, format!("Failed to clear browsing data: {}", e))),
