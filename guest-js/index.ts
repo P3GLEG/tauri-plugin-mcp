@@ -73,6 +73,8 @@ let waitForUnlistenFunction: (() => void) | null = null;
 let navigateWebviewUnlistenFunction: (() => void) | null = null;
 let manageZoomUnlistenFunction: (() => void) | null = null;
 let typeIntoFocusedUnlistenFunction: (() => void) | null = null;
+let pressKeyUnlistenFunction: (() => void) | null = null;
+let setFileInputUnlistenFunction: (() => void) | null = null;
 
 // ---- Correlation ID helpers ----
 // Extract the _correlationId from an event payload (injected by Rust's emit_and_wait).
@@ -148,6 +150,8 @@ export async function setupPluginListeners() {
     navigateWebviewUnlistenFunction = await currentWindow.listen('navigate-webview', handleNavigateWebviewRequest);
     manageZoomUnlistenFunction = await currentWindow.listen('manage-zoom', handleManageZoomRequest);
     typeIntoFocusedUnlistenFunction = await currentWindow.listen('type-into-focused', handleTypeIntoFocusedRequest);
+    pressKeyUnlistenFunction = await currentWindow.listen('press-key', handlePressKeyRequest);
+    setFileInputUnlistenFunction = await currentWindow.listen('set-file-input', handleSetFileInputRequest);
 
     console.log('TAURI-PLUGIN-MCP: All event listeners are set up on the current window.');
 }
@@ -218,6 +222,14 @@ export async function cleanupPluginListeners() {
     if (typeIntoFocusedUnlistenFunction) {
         typeIntoFocusedUnlistenFunction();
         typeIntoFocusedUnlistenFunction = null;
+    }
+    if (pressKeyUnlistenFunction) {
+        pressKeyUnlistenFunction();
+        pressKeyUnlistenFunction = null;
+    }
+    if (setFileInputUnlistenFunction) {
+        setFileInputUnlistenFunction();
+        setFileInputUnlistenFunction = null;
     }
     console.log('TAURI-PLUGIN-MCP: All event listeners have been removed.');
 }
@@ -1499,10 +1511,32 @@ async function handleSendTextToElementRequest(event: any) {
             throw new Error(`Element with ${selectorType}="${selectorValue}" not found. ${debugInfo.join(' ')}`);
         }
         
+        // <select> elements: pick the matching option instead of typing
+        if (element instanceof HTMLSelectElement) {
+            if (!selectOptionOnSelect(element, text)) {
+                throw selectOptionError(element, text);
+            }
+            await emitResponse('send-text-to-element-response', correlationId, {
+                success: true,
+                data: {
+                    element: {
+                        tag: element.tagName,
+                        classes: element.className,
+                        id: element.id,
+                        type: 'select',
+                        text: text,
+                        isEditable: true,
+                        strategy: 'select'
+                    }
+                }
+            });
+            return;
+        }
+
         // Check if the element is an input field, textarea, or has contentEditable
-        const isEditableElement = 
-            element instanceof HTMLInputElement || 
-            element instanceof HTMLTextAreaElement || 
+        const isEditableElement =
+            element instanceof HTMLInputElement ||
+            element instanceof HTMLTextAreaElement ||
             element.isContentEditable;
             
         if (!isEditableElement) {
@@ -1559,6 +1593,27 @@ async function handleSendTextToElementRequest(event: any) {
             error: error instanceof Error ? error.toString() : String(error)
         }).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
     }
+}
+
+// Select the <option> of a <select> whose value or visible text matches (case-insensitive).
+// Dispatches input + change so React/Vue controlled selects pick up the new value.
+function selectOptionOnSelect(el: HTMLSelectElement, value: string): boolean {
+    const needle = value.toLowerCase().trim();
+    for (const opt of el.options) {
+        if (opt.value.toLowerCase().trim() === needle || opt.text.toLowerCase().trim() === needle) {
+            el.focus();
+            opt.selected = true;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }
+    }
+    return false;
+}
+
+function selectOptionError(el: HTMLSelectElement, value: string): Error {
+    const available = Array.from(el.options).map(o => o.text || o.value).slice(0, 20);
+    return new Error(`No <option> matching "${value}" found in <select>${el.id ? ' #' + el.id : ''}. Available options: ${JSON.stringify(available)}`);
 }
 
 // Simulate typing into React controlled input/textarea elements.
@@ -2059,9 +2114,9 @@ async function handleFillFormRequest(event: any) {
                     // Forward the field's clear preference (default true)
                     await simulateReactInputTyping(el, field.value, 0, clear);
                 } else if (el instanceof HTMLSelectElement) {
-                    el.focus();
-                    el.value = field.value;
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (!selectOptionOnSelect(el, field.value)) {
+                        throw selectOptionError(el, field.value);
+                    }
                 } else if (el instanceof HTMLElement && el.isContentEditable) {
                     el.focus();
                     if (clear) {
@@ -2276,20 +2331,8 @@ async function handleTypeIntoFocusedRequest(event: any) {
         // Route to the appropriate typing strategy
         if (el instanceof HTMLSelectElement) {
             elementInfo.strategy = 'select';
-            // For <select>, find the option whose text or value matches and select it
-            const lowerText = text.toLowerCase().trim();
-            let matched = false;
-            for (const opt of el.options) {
-                if (opt.text.toLowerCase().trim() === lowerText || opt.value.toLowerCase().trim() === lowerText) {
-                    opt.selected = true;
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    matched = true;
-                    break;
-                }
-            }
-            if (!matched) {
-                throw new Error(`No <option> matching "${text}" found in <select>${el.id ? ' #' + el.id : ''}.`);
+            if (!selectOptionOnSelect(el, text)) {
+                throw selectOptionError(el, text);
             }
         } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
             elementInfo.strategy = 'react-input';
@@ -2340,6 +2383,251 @@ async function handleTypeIntoFocusedRequest(event: any) {
             success: false,
             error: error instanceof Error ? error.message : String(error)
         }));
+    }
+}
+
+// --- press_key handler ---
+// Dispatches synthetic keydown/keyup events (with modifier flags) to a target
+// element. Synthetic events are untrusted so the browser will NOT perform
+// native default actions — the common ones (text insertion, Enter submit,
+// Tab focus traversal, Backspace/Delete) are emulated when the app's own
+// handlers don't call preventDefault().
+
+const NAMED_KEY_CODES: Record<string, string> = {
+    Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', Backspace: 'Backspace',
+    Delete: 'Delete', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown',
+    ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', Home: 'Home', End: 'End',
+    PageUp: 'PageUp', PageDown: 'PageDown', ' ': 'Space',
+    F1: 'F1', F2: 'F2', F3: 'F3', F4: 'F4', F5: 'F5', F6: 'F6',
+    F7: 'F7', F8: 'F8', F9: 'F9', F10: 'F10', F11: 'F11', F12: 'F12',
+};
+
+function codeForKey(key: string): string {
+    if (NAMED_KEY_CODES[key]) return NAMED_KEY_CODES[key];
+    if (key.length === 1) {
+        if (/[a-zA-Z]/.test(key)) return 'Key' + key.toUpperCase();
+        if (/[0-9]/.test(key)) return 'Digit' + key;
+    }
+    return '';
+}
+
+function tabbableElements(): HTMLElement[] {
+    const sel = 'a[href], button, input, textarea, select, summary, [tabindex]';
+    return Array.from(document.querySelectorAll(sel))
+        .filter((el): el is HTMLElement => el instanceof HTMLElement)
+        .filter(el => !el.hasAttribute('disabled') && el.tabIndex !== -1 && isElementVisible(el));
+}
+
+function emulateDefaultKeyAction(el: Element, key: string, shift: boolean) {
+    const isTextInput = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
+    const isEditable = isTextInput || (el instanceof HTMLElement && el.isContentEditable);
+
+    if (key.length === 1) {
+        if (isEditable) document.execCommand('insertText', false, key);
+        return;
+    }
+    switch (key) {
+        case 'Enter':
+            if (el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable)) {
+                document.execCommand('insertText', false, '\n');
+            } else if (el instanceof HTMLInputElement && el.form) {
+                if (typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
+                else el.form.submit();
+            } else if (el instanceof HTMLElement && (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button')) {
+                el.click();
+            }
+            break;
+        case 'Tab': {
+            const tabbables = tabbableElements();
+            if (tabbables.length === 0) break;
+            const idx = tabbables.indexOf(el as HTMLElement);
+            const next = shift
+                ? tabbables[(idx <= 0 ? tabbables.length : idx) - 1]
+                : tabbables[(idx + 1) % tabbables.length];
+            if (next) {
+                next.focus();
+                if (isTypeable(next)) _lastFocusedElement = next;
+            }
+            break;
+        }
+        case 'Backspace':
+            if (isEditable) document.execCommand('delete', false);
+            break;
+        case 'Delete':
+            if (isEditable) document.execCommand('forwardDelete', false);
+            break;
+    }
+}
+
+async function handlePressKeyRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received press-key, payload:', event.payload);
+    const correlationId = getCorrelationId(event.payload);
+
+    // Dedup guard: key presses are stateful, never process twice
+    if (correlationId && _handledCorrelationIds.has(correlationId)) {
+        console.warn('TAURI-PLUGIN-MCP: Ignoring duplicate press-key for correlation ID:', correlationId);
+        return;
+    }
+    if (correlationId) {
+        _handledCorrelationIds.add(correlationId);
+        setTimeout(() => _handledCorrelationIds.delete(correlationId), 30000);
+    }
+
+    try {
+        const { key: rawKey, modifiers = [], repeat = 1, selectorType, selectorValue } = event.payload || {};
+        if (!rawKey || typeof rawKey !== 'string') {
+            throw new Error('key parameter is required (e.g. "Escape", "Enter", "Tab", "ArrowDown", or a single character)');
+        }
+        const key = rawKey === 'Space' ? ' ' : rawKey;
+
+        // Resolve target: explicit selector > active element > last focused > body
+        let target: Element | null = null;
+        if (selectorType && selectorValue) {
+            target = resolveElement({
+                ref: selectorType === 'ref' ? parseInt(selectorValue, 10) : undefined,
+                selectorType: selectorType === 'ref' ? undefined : selectorType,
+                selectorValue,
+            });
+            if (!target) {
+                throw new Error(`Element with ${selectorType}="${selectorValue}" not found. ${selectorType === 'ref' ? 'Call query_page (mode=map) first to populate refs.' : ''}`);
+            }
+            if (target instanceof HTMLElement) target.focus();
+        } else {
+            target = (document.activeElement && document.activeElement !== document.body)
+                ? document.activeElement
+                : (_lastFocusedElement || document.body);
+        }
+
+        const mods = new Set((modifiers as string[]).map(m => String(m).toLowerCase()));
+        const eventInit: KeyboardEventInit = {
+            key,
+            code: codeForKey(key),
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            ctrlKey: mods.has('ctrl') || mods.has('control'),
+            metaKey: mods.has('cmd') || mods.has('meta') || mods.has('command'),
+            shiftKey: mods.has('shift'),
+            altKey: mods.has('alt') || mods.has('option'),
+        };
+        const hasCtrlOrMeta = !!(eventInit.ctrlKey || eventInit.metaKey);
+        const count = Math.max(1, Math.min(100, Number(repeat) || 1));
+        let lastDefaultPrevented = false;
+
+        for (let i = 0; i < count; i++) {
+            // Re-resolve the active element each press — Tab/Enter can move focus
+            const el = (document.activeElement && document.activeElement !== document.body)
+                ? document.activeElement
+                : (target || document.body);
+            const kd = new KeyboardEvent('keydown', eventInit);
+            const proceed = el.dispatchEvent(kd);
+            lastDefaultPrevented = !proceed;
+
+            if (proceed && !hasCtrlOrMeta && !eventInit.altKey) {
+                emulateDefaultKeyAction(el, key, eventInit.shiftKey === true);
+            }
+
+            el.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+            if (i < count - 1) await new Promise(r => setTimeout(r, 30));
+        }
+
+        const finalTarget = document.activeElement || target;
+        await emitResponse('press-key-response', correlationId, JSON.stringify({
+            success: true,
+            data: {
+                key: rawKey,
+                code: eventInit.code,
+                modifiers: Array.from(mods),
+                repeat: count,
+                defaultPrevented: lastDefaultPrevented,
+                target: finalTarget ? {
+                    tag: finalTarget.tagName.toLowerCase(),
+                    id: (finalTarget as HTMLElement).id || undefined,
+                } : null,
+            }
+        }));
+    } catch (error) {
+        await emitResponse('press-key-response', correlationId, JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        })).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
+    }
+}
+
+// --- set_file_input handler ---
+// Attaches files (sent base64-encoded from the MCP server) to an
+// <input type="file"> via DataTransfer, since the native file chooser
+// cannot be driven programmatically from inside the webview.
+async function handleSetFileInputRequest(event: any) {
+    console.log('TAURI-PLUGIN-MCP: Received set-file-input');
+    const correlationId = getCorrelationId(event.payload);
+
+    // Dedup guard
+    if (correlationId && _handledCorrelationIds.has(correlationId)) {
+        console.warn('TAURI-PLUGIN-MCP: Ignoring duplicate set-file-input for correlation ID:', correlationId);
+        return;
+    }
+    if (correlationId) {
+        _handledCorrelationIds.add(correlationId);
+        setTimeout(() => _handledCorrelationIds.delete(correlationId), 30000);
+    }
+
+    try {
+        const { selectorType, selectorValue, files } = event.payload || {};
+        if (!Array.isArray(files) || files.length === 0) {
+            throw new Error('files array is required');
+        }
+        if (!selectorType || !selectorValue) {
+            throw new Error('selectorType and selectorValue are required to target the file input');
+        }
+
+        const element = resolveElement({
+            ref: selectorType === 'ref' ? parseInt(selectorValue, 10) : undefined,
+            selectorType: selectorType === 'ref' ? undefined : selectorType,
+            selectorValue,
+        });
+        if (!element) {
+            throw new Error(`Element with ${selectorType}="${selectorValue}" not found.`);
+        }
+
+        // Accept the input itself, or a container/label holding one
+        let input: HTMLInputElement | null = null;
+        if (element instanceof HTMLInputElement && element.type === 'file') {
+            input = element;
+        } else {
+            input = element.querySelector('input[type="file"]');
+        }
+        if (!input) {
+            throw new Error(`Element <${element.tagName.toLowerCase()}> is not (and does not contain) an <input type="file">`);
+        }
+
+        if (files.length > 1 && !input.multiple) {
+            throw new Error(`Input does not accept multiple files (got ${files.length}). Set the "multiple" attribute or send one file.`);
+        }
+
+        const dt = new DataTransfer();
+        for (const f of files) {
+            const binary = atob(f.dataBase64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            dt.items.add(new File([bytes], f.name, { type: f.mimeType || 'application/octet-stream' }));
+        }
+        input.files = dt.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+
+        await emitResponse('set-file-input-response', correlationId, JSON.stringify({
+            success: true,
+            data: {
+                filesAttached: files.map((f: any) => f.name),
+                input: { id: input.id || undefined, name: input.name || undefined },
+            }
+        }));
+    } catch (error) {
+        await emitResponse('set-file-input-response', correlationId, JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        })).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
     }
 }
 

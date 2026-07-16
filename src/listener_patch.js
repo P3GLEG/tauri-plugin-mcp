@@ -161,6 +161,50 @@
         }, 250);
     }
 
+    // ---- dialog stubs ----
+    // window.alert/confirm/prompt are synchronous and block the webview's JS
+    // thread, which deadlocks every MCP tool that round-trips through JS
+    // (execute_js, query_page, type_text, ...). Replace them with stubs that
+    // auto-answer and record the dialog into the log buffer (target "dialog",
+    // queryable via query_logs). Opt out with PluginConfig::stub_dialogs(false),
+    // which sets window.__TAURI_MCP_DIALOG_STUB__ = false before this runs.
+    // Per-call overrides: set window.__TAURI_MCP_DIALOG_RESPONSES__ =
+    // { confirm: false, prompt: "custom" } (e.g. via execute_js) to change
+    // the answers for subsequent dialogs.
+    if (window.__TAURI_MCP_DIALOG_STUB__ !== false) {
+        function dialogResponses() {
+            var o = window.__TAURI_MCP_DIALOG_RESPONSES__;
+            return (o && typeof o === 'object') ? o : {};
+        }
+        function recordDialog(kind, message, answer) {
+            try {
+                var invoke = getInvoke();
+                var payload = {
+                    level: 'warn',
+                    message: kind + '(' + safeStringify(String(message == null ? '' : message)) + ') intercepted, auto-answered: ' + answer,
+                    target: 'dialog'
+                };
+                if (invoke) { invoke('plugin:mcp|push_log', payload); }
+                else if (PENDING.length < MAX_PENDING) { PENDING.push(payload); scheduleFlush(); }
+            } catch (_) {}
+        }
+        window.alert = function(message) {
+            recordDialog('alert', message, 'dismissed');
+        };
+        window.confirm = function(message) {
+            var r = dialogResponses().confirm;
+            var answer = (typeof r === 'boolean') ? r : true;
+            recordDialog('confirm', message, String(answer));
+            return answer;
+        };
+        window.prompt = function(message, defaultValue) {
+            var r = dialogResponses().prompt;
+            var answer = (typeof r === 'string') ? r : (defaultValue == null ? '' : String(defaultValue));
+            recordDialog('prompt', message, JSON.stringify(answer));
+            return answer;
+        };
+    }
+
     var LEVELS = { log: 'trace', debug: 'debug', info: 'info', warn: 'warn', error: 'error' };
     Object.keys(LEVELS).forEach(function(fn) {
         if (typeof console[fn] !== 'function') return;

@@ -25,14 +25,15 @@ tauri-plugin-mcp = { git = "https://github.com/P3GLEG/tauri-plugin-mcp" }
 
 ## Tools
 
-The MCP server exposes 13 high-level tools to AI agents:
+The MCP server exposes 14 high-level tools to AI agents:
 
 | Tool | Description |
 |------|-------------|
 | **take_screenshot** | Captures a screenshot of an application window. Saves full image to disk with small thumbnail inline (optimized for token efficiency). |
 | **query_page** | Inspects the current page. Modes: `map` (structured element refs), `html` (raw DOM), `state` (URL/title/scroll/viewport), `find_element` (CSS pixel coordinates for clicking), `app_info` (app metadata, windows, monitors). |
 | **click** | Clicks at x/y coordinates or via selector (ref, id, class, css, tag, text). Selector-based clicks auto-resolve element position. |
-| **type_text** | Types text into the page. Supports a `fields` array for bulk form fill, selector targeting, or typing into the focused element. Works with inputs, textareas, contentEditable, React, Lexical, and Slate. |
+| **type_text** | Types text into the page. Supports a `fields` array for bulk form fill, selector targeting, or typing into the focused element. Selects options in `<select>` dropdowns by value or label, and attaches files to `<input type="file">` via a `files` array. Works with inputs, textareas, contentEditable, React, Lexical, and Slate. |
+| **press_key** | Presses keyboard keys the typing tools can't express: Escape, Enter, Tab, arrows, Backspace/Delete, F-keys, and modifier chords (cmd+a). Emulates default actions (Enter submits, Tab moves focus) unless the app prevents them. |
 | **mouse_action** | Non-click mouse actions: `hover`, `scroll` (by direction/amount/to element/to top/bottom), `drag` (start to end coordinates). |
 | **navigate** | Webview navigation: `goto` (URL), `back`/`forward` (with optional delta), `reload`. |
 | **execute_js** | Runs arbitrary JavaScript in the webview. Returns the result of the last statement or promise. |
@@ -40,7 +41,7 @@ The MCP server exposes 13 high-level tools to AI agents:
 | **manage_window** | Window control (list/focus/minimize/maximize/close/position/size/fullscreen), zoom, devtools, and webview state management. |
 | **wait_for** | Waits for a condition: text appearing/disappearing, element visible/hidden/attached/detached. Useful after async content loads. |
 | **restart_app** | Restarts the Tauri application and waits for it to come back online. Force-kills a frozen app (IPC mode only). |
-| **query_logs** | Queries buffered app logs (Rust `log!()` output and webview `console.*` calls) with level/source/substring filters, pagination, and a summary mode. |
+| **query_logs** | Queries buffered app logs (Rust `log!()` output, webview `console.*` calls, and intercepted dialogs) with level/source/substring filters, pagination, and a summary mode. |
 | **log_mark** | Inserts begin/end markers into the log buffer so `query_logs` can return exactly the logs produced by an action. |
 
 ## Setup
@@ -68,6 +69,8 @@ Only include the MCP plugin in development builds:
     ));
 }
 ```
+
+By default the plugin replaces `window.alert`/`confirm`/`prompt` with non-blocking stubs — native dialogs block the webview's JS thread and would deadlock every MCP tool that round-trips through JS. Intercepted dialogs are auto-answered (`confirm` → true, `prompt` → its default value) and recorded in the log buffer under target `"dialog"` so `query_logs` can report them. Opt out with `.stub_dialogs(false)`, or override answers at runtime by setting `window.__TAURI_MCP_DIALOG_RESPONSES__ = { confirm: false, prompt: "value" }` (e.g. via `execute_js`).
 
 The `#[cfg(debug_assertions)]` guard keeps the plugin out of release binaries entirely. As a second line of defense, the plugin also refuses to start its socket server in release builds unless you explicitly opt in with `.allow_release_builds(true)`.
 

@@ -627,6 +627,73 @@ pub async fn handle_wait_for<R: Runtime>(
     }
 }
 
+/// Handler for press_key — dispatches synthetic keyboard events (with
+/// modifier flags and default-action emulation) in the webview.
+pub async fn handle_press_key<R: Runtime>(
+    app: &AppHandle<R>,
+    payload: Value,
+) -> Result<crate::socket_server::SocketResponse, crate::error::Error> {
+    let window_label = extract_window_label(&payload)?;
+    let _webview = crate::desktop::get_webview_for_eval(app, &window_label).ok_or_else(|| {
+        crate::error::Error::Anyhow(format!("Webview not found: {}", window_label))
+    })?;
+
+    let emit_target = get_emit_target(app, &window_label);
+
+    let js_payload = serde_json::json!({
+        "key": payload.get("key"),
+        "modifiers": payload.get("modifiers"),
+        "repeat": payload.get("repeat"),
+        "selectorType": payload.get("selector_type"),
+        "selectorValue": payload.get("selector_value"),
+    });
+
+    match emit_and_wait(
+        app,
+        &emit_target,
+        "press-key",
+        "press-key-response",
+        js_payload,
+        std::time::Duration::from_secs(15),
+    ).await {
+        Ok(result) => Ok(parse_js_response(&result)),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, e.to_string())),
+    }
+}
+
+/// Handler for set_file_input — attaches base64-encoded files to an
+/// `<input type="file">` via DataTransfer in the webview.
+pub async fn handle_set_file_input<R: Runtime>(
+    app: &AppHandle<R>,
+    payload: Value,
+) -> Result<crate::socket_server::SocketResponse, crate::error::Error> {
+    let window_label = extract_window_label(&payload)?;
+    let _webview = crate::desktop::get_webview_for_eval(app, &window_label).ok_or_else(|| {
+        crate::error::Error::Anyhow(format!("Webview not found: {}", window_label))
+    })?;
+
+    let emit_target = get_emit_target(app, &window_label);
+
+    let js_payload = serde_json::json!({
+        "selectorType": payload.get("selector_type"),
+        "selectorValue": payload.get("selector_value"),
+        "files": payload.get("files"),
+    });
+
+    // Larger timeout: base64 payloads can be big and decoding takes time
+    match emit_and_wait(
+        app,
+        &emit_target,
+        "set-file-input",
+        "set-file-input-response",
+        js_payload,
+        std::time::Duration::from_secs(30),
+    ).await {
+        Ok(result) => Ok(parse_js_response(&result)),
+        Err(e) => Ok(crate::socket_server::SocketResponse::err(None, e.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

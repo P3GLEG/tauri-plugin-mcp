@@ -14,13 +14,14 @@ import { once } from "node:events";
 
 // ── Expectations ──────────────────────────────────────────────────────
 
-const EXPECTED_TOOL_COUNT = 13;
+const EXPECTED_TOOL_COUNT = 14;
 
 const EXPECTED_TOOLS = [
   "take_screenshot",
   "query_page",
   "click",
   "type_text",
+  "press_key",
   "mouse_action",
   "navigate",
   "execute_js",
@@ -33,7 +34,7 @@ const EXPECTED_TOOLS = [
 ];
 
 // Tools whose selector_type enum MUST include "ref"
-const TOOLS_WITH_REF_SELECTOR = ["query_page", "click", "type_text"];
+const TOOLS_WITH_REF_SELECTOR = ["query_page", "click", "type_text", "press_key"];
 
 // Specific schema property checks:  tool -> param -> assertion
 const SCHEMA_CHECKS = {
@@ -63,7 +64,14 @@ const SCHEMA_CHECKS = {
   type_text: {
     params: [
       "text", "selector_type", "selector_value", "fields",
-      "submit_ref", "window_label", "delay_ms", "initial_delay_ms",
+      "submit_ref", "files", "window_label", "delay_ms", "initial_delay_ms",
+    ],
+    annotations: { destructiveHint: true },
+  },
+  press_key: {
+    params: [
+      "key", "modifiers", "repeat",
+      "selector_type", "selector_value", "window_label",
     ],
     annotations: { destructiveHint: true },
   },

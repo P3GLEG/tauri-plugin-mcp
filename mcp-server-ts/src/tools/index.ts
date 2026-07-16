@@ -3,6 +3,7 @@ import { registerTakeScreenshotTool } from "./take_screenshot.js";
 import { registerQueryPageTool } from "./query_page.js";
 import { registerClickTool } from "./click.js";
 import { registerTypeTextTool } from "./type_text.js";
+import { registerPressKeyTool } from "./press_key.js";
 import { registerMouseActionTool } from "./mouse_action.js";
 import { registerNavigateTool } from "./navigate.js";
 import { registerExecuteJsTool } from "./execute_js.js";
@@ -23,6 +24,7 @@ export function registerAllTools(server: McpServer) {
   registerQueryPageTool(server);
   registerClickTool(server);
   registerTypeTextTool(server);
+  registerPressKeyTool(server);
   registerMouseActionTool(server);
   registerNavigateTool(server);
   registerExecuteJsTool(server);

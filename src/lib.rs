@@ -98,6 +98,12 @@ pub struct PluginConfig {
     /// `tauri-plugin-log`) and `log` only allows one. JS console.* logs
     /// are always captured regardless of this flag.
     pub capture_rust_logs: bool,
+    /// If true (the default), replace `window.alert`/`confirm`/`prompt`
+    /// with non-blocking stubs that auto-answer and record the dialog into
+    /// the log buffer (target `"dialog"`, queryable via `query_logs`).
+    /// Native dialogs block the webview's JS thread and would deadlock
+    /// every MCP tool that round-trips through JS.
+    pub stub_dialogs: bool,
 }
 
 impl Default for PluginConfig {
@@ -120,7 +126,17 @@ impl PluginConfig {
             disable_auth: false,
             allow_release_builds: false,
             capture_rust_logs: false,
+            stub_dialogs: true,
         }
+    }
+
+    /// Disable the `window.alert`/`confirm`/`prompt` stubs. Only do this if
+    /// your app genuinely needs native blocking dialogs during development —
+    /// a single `alert()` will hang every JS-based MCP tool until a human
+    /// dismisses it.
+    pub fn stub_dialogs(mut self, enable: bool) -> Self {
+        self.stub_dialogs = enable;
+        self
     }
 
     /// Enable capture of Rust-side `log!()` output into the MCP ring buffer.
@@ -341,10 +357,16 @@ pub fn init_with_config<R: Runtime>(config: PluginConfig) -> TauriPlugin<R> {
         log_buffer::install_logger();
     }
 
+    let stub_dialogs = config.stub_dialogs;
+
     Builder::new("mcp")
         .invoke_handler(tauri::generate_handler![tools::push_log::push_log])
-        .on_page_load(|webview, payload| {
+        .on_page_load(move |webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
+                if !stub_dialogs {
+                    // Must run before listener_patch.js, which checks this flag
+                    let _ = webview.eval("window.__TAURI_MCP_DIALOG_STUB__ = false;");
+                }
                 let _ = webview.eval(include_str!("listener_patch.js"));
             }
         })

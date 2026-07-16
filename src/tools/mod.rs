@@ -47,8 +47,9 @@ pub use take_screenshot::handle_take_screenshot;
 pub use text_input::handle_simulate_text_input;
 pub use webview::{
     handle_fill_form, handle_get_dom, handle_get_element_position, handle_get_page_map,
-    handle_get_page_state, handle_navigate_back, handle_scroll_page, handle_send_text_to_element,
-    handle_type_into_focused, handle_wait_for,
+    handle_get_page_state, handle_navigate_back, handle_press_key, handle_scroll_page,
+    handle_send_text_to_element, handle_set_file_input, handle_type_into_focused,
+    handle_wait_for,
 };
 pub use webview_state::handle_manage_webview_state;
 pub use window_manager::handle_manage_window;
@@ -97,6 +98,8 @@ pub async fn handle_command<R: Runtime>(
         commands::MANAGE_ZOOM => handle_manage_zoom(app, payload).await,
         commands::MANAGE_WEBVIEW_STATE => handle_manage_webview_state(app, payload).await,
         commands::TYPE_INTO_FOCUSED => handle_type_into_focused(app, payload).await,
+        commands::PRESS_KEY => handle_press_key(app, payload).await,
+        commands::SET_FILE_INPUT => handle_set_file_input(app, payload).await,
         commands::RESTART_APP => handle_restart_app(app, payload).await,
         commands::QUERY_LOGS => handle_query_logs(app, payload).await,
         commands::LOG_MARK => handle_log_mark(app, payload).await,
@@ -174,6 +177,8 @@ mod tests {
             commands::MANAGE_ZOOM,
             commands::MANAGE_WEBVIEW_STATE,
             commands::TYPE_INTO_FOCUSED,
+            commands::PRESS_KEY,
+            commands::SET_FILE_INPUT,
             commands::RESTART_APP,
             commands::QUERY_LOGS,
             commands::LOG_MARK,
@@ -183,6 +188,6 @@ mod tests {
         for cmd in &all_commands {
             assert!(seen.insert(*cmd), "Duplicate command constant: {}", cmd);
         }
-        assert_eq!(seen.len(), 28, "Expected 28 unique commands");
+        assert_eq!(seen.len(), 30, "Expected 30 unique commands");
     }
 }
