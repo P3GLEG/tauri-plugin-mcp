@@ -49,7 +49,8 @@ export function registerPressKeyTool(server: McpServer) {
           return createErrorResponse(result.error as string || 'press_key failed');
         }
 
-        const data = (result as any).data ?? {};
+        // sendCommand resolves with the response's `data` field directly
+        const data = (result as any).data ?? result;
         const mods = params.modifiers?.length ? `${params.modifiers.join('+')}+` : '';
         const times = params.repeat > 1 ? ` x${params.repeat}` : '';
         const target = data.target ? ` (focus: <${data.target.tag}${data.target.id ? ` #${data.target.id}` : ''}>)` : '';

@@ -8,9 +8,9 @@ export function registerExecuteJsTool(server: McpServer) {
     "execute_js",
     "Executes arbitrary JavaScript in a webview. Returns the completion value of the code (the last expression's value); promises are awaited and their resolved value returned. This is the universal escape hatch — use it for anything not covered by other tools. Note: `window.__TAURI__` only exists if the app enables `app.withGlobalTauri` — for Tauri events/commands prefer the manage_ipc tool, which works regardless. Caution: can modify page state.",
     {
-      code: z.string().describe("Required. The string of JavaScript code to be executed in the target window's webview context. Ensure the code is safe and achieves the intended purpose. Malformed or malicious code can lead to errors or unwanted behavior."),
-      window_label: z.string().default("main").describe("The identifier (e.g., visible title or internal label) of the application window where the JavaScript code will be executed. Defaults to 'main' if not specified."),
-      timeout_ms: z.number().int().positive().max(300000).optional().describe("The maximum time in milliseconds to allow for the JavaScript execution. If the script exceeds this timeout, its execution will be terminated, and an error may be returned. Max: 300000 (5 minutes)."),
+      code: z.string().describe("JavaScript to execute in the webview. The last expression's value is returned (promises are awaited); the value must be JSON-serializable to round-trip — DOM nodes and functions come back as strings."),
+      window_label: z.string().default("main").describe("Target window. Defaults to 'main'."),
+      timeout_ms: z.number().int().positive().max(300000).optional().describe("Max execution time in milliseconds. Default: 5000. Max: 300000 (5 minutes). Raise this for code that awaits slow promises."),
     },
     {
       title: "Execute JavaScript Code in Specified Application Window",

@@ -1487,6 +1487,17 @@ function stringifyJsResult(result: any): string {
 // multi-statement code returns the value of its final expression
 // (e.g. `doSetup(); 'done'` returns 'done'), matching what the tool promises.
 function executeJavaScript(code: string): any {
+    // A leading '{' parses as a block statement, not an object literal:
+    // `{a: 1}` evaluates as a label (returning 1) and `{a: 1, b: 2}` throws.
+    // Try such code as a parenthesized expression first.
+    if (/^\s*\{/.test(code)) {
+        try {
+            return (0, eval)('(' + code + ')');
+        } catch (e) {
+            // Not an expression (e.g. a genuine block) — fall through.
+            if (!(e instanceof SyntaxError)) throw e;
+        }
+    }
     try {
         // Indirect eval: runs in global scope and returns the completion value.
         return (0, eval)(code);
@@ -2699,9 +2710,11 @@ async function handleSetFileInputRequest(event: any) {
 
         const dt = new DataTransfer();
         for (const f of files) {
-            const binary = atob(f.dataBase64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            // Decode via fetch(data:) — the engine decodes base64 natively,
+            // unlike a char-by-char atob loop that freezes the UI thread for
+            // seconds at multi-MB sizes.
+            const resp = await fetch(`data:application/octet-stream;base64,${f.dataBase64}`);
+            const bytes = await resp.arrayBuffer();
             dt.items.add(new File([bytes], f.name, { type: f.mimeType || 'application/octet-stream' }));
         }
         input.files = dt.files;

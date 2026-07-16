@@ -41,7 +41,7 @@ The MCP server exposes 15 high-level tools to AI agents:
 | **manage_window** | Window control (list/focus/minimize/maximize/close/position/size/fullscreen), zoom, devtools, and webview state management. |
 | **wait_for** | Waits for a condition: text appearing/disappearing, element visible/hidden/attached/detached. Useful after async content loads. |
 | **restart_app** | Restarts the Tauri application and waits for it to come back online. Force-kills a frozen app (IPC mode only). |
-| **manage_ipc** | Tauri IPC access: `invoke` any `#[tauri::command]` with JSON args through the app's real IPC path, inspect captured webview↔Rust invoke traffic (names, args/result previews, latency, error rates), emit Tauri events, and wait for a named event to fire. |
+| **manage_ipc** | Tauri IPC access: `invoke` any `#[tauri::command]` with JSON args through the app's real IPC path, inspect captured webview↔Rust invoke traffic (names, args/result previews, latency, error rates), emit Tauri events, and wait for a named event to fire. Entries an app self-reports via `push_ipc` are labeled `[self-reported]` — any page script can forge them, so they're surfaced as untrusted. |
 | **query_logs** | Queries buffered app logs (Rust `log!()` output, webview `console.*` calls, and intercepted dialogs) with level/source/substring filters, pagination, and a summary mode. |
 | **log_mark** | Inserts begin/end markers into the log buffer so `query_logs` can return exactly the logs produced by an action. |
 
@@ -71,7 +71,7 @@ Only include the MCP plugin in development builds:
 }
 ```
 
-By default the plugin replaces `window.alert`/`confirm`/`prompt` with non-blocking stubs — native dialogs block the webview's JS thread and would deadlock every MCP tool that round-trips through JS. Intercepted dialogs are auto-answered (`confirm` → true, `prompt` → its default value) and recorded in the log buffer under target `"dialog"` so `query_logs` can report them. Opt out with `.stub_dialogs(false)`, or override answers at runtime by setting `window.__TAURI_MCP_DIALOG_RESPONSES__ = { confirm: false, prompt: "value" }` (e.g. via `execute_js`).
+By default the plugin replaces `window.alert`/`confirm`/`prompt` with non-blocking stubs — native dialogs block the webview's JS thread and would deadlock every MCP tool that round-trips through JS. Intercepted dialogs are auto-answered (`confirm` → false — the safe answer for a consent gate, `prompt` → its default value) and recorded in the log buffer under target `"dialog"` so `query_logs` can report them. Opt out with `.stub_dialogs(false)`, or override answers at runtime by setting `window.__TAURI_MCP_DIALOG_RESPONSES__ = { confirm: true, prompt: "value" }` (e.g. via `execute_js`).
 
 The `#[cfg(debug_assertions)]` guard keeps the plugin out of release binaries entirely. As a second line of defense, the plugin also refuses to start its socket server in release builds unless you explicitly opt in with `.allow_release_builds(true)`.
 

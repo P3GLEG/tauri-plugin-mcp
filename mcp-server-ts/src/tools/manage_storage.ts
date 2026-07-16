@@ -36,7 +36,7 @@ export function registerManageStorageTool(server: McpServer) {
           }
 
           // Validate key requirements
-          if ((action === 'set' || action === 'remove') && !params.key) {
+          if ((action === 'get' || action === 'set' || action === 'remove') && !params.key) {
             return createErrorResponse(`'key' is required for the '${action}' action`);
           }
           if (action === 'set' && params.value === undefined) {

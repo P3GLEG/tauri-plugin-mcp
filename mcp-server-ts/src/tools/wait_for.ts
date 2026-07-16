@@ -11,7 +11,7 @@ export function registerWaitForTool(server: McpServer) {
       window_label: z.string().default("main").describe("The window to observe. Defaults to 'main'."),
       text: z.string().optional().describe("Wait for this text to appear (or disappear if state='hidden') in the page body."),
       selector: z.string().optional().describe("CSS selector for the element to wait for."),
-      ref: z.number().int().optional().describe("Ref number (from get_page_map) of the element to wait for."),
+      ref: z.number().int().optional().describe("Ref number (from query_page map mode) of the element to wait for."),
       state: z.enum(["visible", "hidden", "attached", "detached"]).default("visible").describe("Condition to wait for. 'visible': element exists and is visible. 'hidden': element is hidden or text is absent. 'attached': element exists in DOM. 'detached': element removed from DOM."),
       timeout_ms: z.number().int().positive().max(300000).default(10000).describe("Maximum time to wait in milliseconds. Default: 10000 (10 seconds). Max: 300000 (5 minutes)."),
     },

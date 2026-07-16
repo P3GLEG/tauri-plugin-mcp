@@ -23,7 +23,7 @@ function extractCoordinates(result: any): { x: number; y: number } | null {
 export function registerClickTool(server: McpServer) {
   server.tool(
     "click",
-    "Clicks at a position in the webview. Provide x/y coordinates directly, or provide a selector (ref from query_page map mode, or id/class/tag/text) to auto-resolve coordinates. For selector-based clicks, this first finds the element then clicks its center. IMPORTANT: Do not guess x/y coordinates from screenshots — screenshot resolution differs from page CSS coordinates. Preferred workflow: (1) use query_page with mode='find_element' to get exact coordinates, then pass those here, or (2) use selector_type/selector_value to auto-resolve. Only use raw x/y with coordinates returned by find_element.",
+    "Clicks in the webview. Preferred: provide a selector (ref from query_page map mode, or id/class/css/tag/text) — left single clicks then dispatch synthetic pointer events (pointerdown→mousedown→pointerup→mouseup→click) directly at the element. This works regardless of window focus/display scaling, may retarget to the nearest interactive ancestor, and produces events with isTrusted=false — handlers that require trusted events won't fire. Right/middle/double clicks and raw x/y clicks use native OS clicking instead, which on macOS requires Accessibility permission. IMPORTANT: Do not guess x/y from screenshots — screenshot resolution differs from page CSS coordinates; only use raw x/y with coordinates returned by query_page mode='find_element'.",
     {
       x: z.number().optional().describe("X coordinate in CSS pixels. Required if no selector provided."),
       y: z.number().optional().describe("Y coordinate in CSS pixels. Required if no selector provided."),

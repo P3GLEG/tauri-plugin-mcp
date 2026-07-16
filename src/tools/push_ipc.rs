@@ -33,6 +33,10 @@ pub fn push_ipc(
         Some("emitted") => "emitted",
         _ => "ok",
     };
-    ipc_buffer::global().push(kind, name, status, duration_ms, args_preview, result_preview, error);
+    // Tag as webview-origin: any page script can call this command, so
+    // manage_ipc labels these entries self-reported/untrusted.
+    ipc_buffer::global().push_with_origin(
+        "webview", kind, name, status, duration_ms, args_preview, result_preview, error,
+    );
     Ok(())
 }

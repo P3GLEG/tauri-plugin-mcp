@@ -65,6 +65,7 @@ impl Default for SocketType {
 }
 
 /// Plugin configuration options.
+#[non_exhaustive]
 pub struct PluginConfig {
     /// Application name (used for default socket naming)
     pub application_name: String,
@@ -100,7 +101,8 @@ pub struct PluginConfig {
     /// are always captured regardless of this flag.
     pub capture_rust_logs: bool,
     /// If true (the default), replace `window.alert`/`confirm`/`prompt`
-    /// with non-blocking stubs that auto-answer and record the dialog into
+    /// with non-blocking stubs that auto-answer (`confirm` → false,
+    /// `prompt` → its default value) and record the dialog into
     /// the log buffer (target `"dialog"`, queryable via `query_logs`).
     /// Native dialogs block the webview's JS thread and would deadlock
     /// every MCP tool that round-trips through JS.
@@ -109,6 +111,8 @@ pub struct PluginConfig {
     /// available (Tauri has no runtime registry of `#[tauri::command]`
     /// handlers, so discovery is otherwise limited to observed traffic).
     pub exposed_commands: Vec<String>,
+    // Construct via PluginConfig::new() + builder methods; new fields may be
+    // added without a major version bump.
 }
 
 impl Default for PluginConfig {

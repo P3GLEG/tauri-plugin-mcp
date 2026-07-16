@@ -78,7 +78,7 @@ export function registerTypeTextTool(server: McpServer) {
       })).optional().describe("Array of form fields to fill. Each needs either a ref or selector_type+selector_value."),
       submit_ref: z.number().int().optional().describe("(fields mode) Ref of submit button to click after filling all fields."),
       // File upload mode
-      files: z.array(z.string()).optional().describe("Absolute paths of files to attach to an <input type=\"file\">. Requires selector_type/selector_value targeting the input (or a container holding it). Max 10MB per file, 25MB total."),
+      files: z.array(z.string()).optional().describe("Absolute paths of files to attach to an <input type=\"file\">. Requires selector_type/selector_value targeting the input (or a container holding it). Max 10MB per file, 25MB total. CAUTION: reads any file on the host and hands its contents to the page — never attach credentials, keys, or other sensitive files, especially if the page shows remote/untrusted content."),
       // Common options
       window_label: z.string().default("main").describe("Target window. Defaults to 'main'."),
       delay_ms: z.number().int().nonnegative().optional().describe("Delay between keystrokes in ms. Default varies by mode."),
@@ -146,7 +146,8 @@ export function registerTypeTextTool(server: McpServer) {
           if ('success' in result && !result.success) {
             return createErrorResponse(result.error as string || 'set_file_input failed');
           }
-          const data = (result as any).data ?? {};
+          // sendCommand resolves with the response's `data` field directly
+          const data = (result as any).data ?? result;
           const names = Array.isArray(data.filesAttached) ? data.filesAttached.join(', ') : fileEntries.map(f => f.name).join(', ');
           return createSuccessResponse(`Attached ${fileEntries.length} file(s) to file input: ${names}`);
         }

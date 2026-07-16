@@ -200,7 +200,10 @@
         };
         window.confirm = function(message) {
             var r = dialogResponses().confirm;
-            var answer = (typeof r === 'boolean') ? r : true;
+            // Default to false: confirm() is a consent gate, so the safe
+            // unattended answer is "deny". Opt into true per-session via
+            // __TAURI_MCP_DIALOG_RESPONSES__ = { confirm: true }.
+            var answer = (typeof r === 'boolean') ? r : false;
             recordDialog('confirm', message, String(answer));
             return answer;
         };

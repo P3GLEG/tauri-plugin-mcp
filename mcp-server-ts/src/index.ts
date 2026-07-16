@@ -14,7 +14,7 @@ const server = new McpServer(
     version,
   },
   {
-    instructions: "Workflow: Start with query_page(mode='app_info') to discover the app. Use query_page(mode='map') for numbered refs, then click or type_text to interact. Use query_page(mode='state') for lightweight checks. Use navigate for URLs, manage_storage for localStorage/cookies, manage_window for window/zoom/devtools. Use execute_js as the universal escape hatch.",
+    instructions: "Workflow: Start with query_page(mode='app_info') to discover the app. Use query_page(mode='map') for numbered refs, then click, type_text, or press_key to interact; use wait_for after actions that load content asynchronously. Use query_page(mode='state') for lightweight checks. Debugging: bracket an action with log_mark, then query_logs({between: id}) to see exactly the Rust + console logs it produced (query_logs mode='summary' first to avoid flooding context). Use manage_ipc to invoke backend commands directly (bisects bugs into frontend vs Rust) and to assert events fire (arm_event → act → captured). Use navigate for URLs, manage_storage for localStorage/cookies, manage_window for window/zoom/devtools, restart_app only in production builds (refuses in dev). Use execute_js as the universal escape hatch.",
     capabilities: {
       resources: {},
       tools: {},

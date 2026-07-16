@@ -20,7 +20,16 @@ const DEFAULT_CAPACITY: usize = 2000;
 /// query responses bounded.
 pub const MAX_PREVIEW_LEN: usize = 500;
 
+fn origin_is_tool(origin: &str) -> bool {
+    origin == "tool"
+}
+
+fn default_origin() -> String {
+    "tool".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct IpcEntry {
     pub id: u64,
     /// Milliseconds since UNIX epoch.
@@ -39,6 +48,14 @@ pub struct IpcEntry {
     pub result_preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// "tool" (recorded by manage_ipc while mediating the IPC) or "webview"
+    /// (self-reported by page JS via the push_ipc command — untrusted, since
+    /// any script in the page can forge these).
+    #[serde(
+        skip_serializing_if = "origin_is_tool",
+        default = "default_origin"
+    )]
+    pub origin: String,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -69,8 +86,25 @@ impl IpcBuffer {
         }
     }
 
+    /// Record an entry the plugin itself mediated (origin "tool").
     pub fn push(
         &self,
+        kind: &str,
+        name: String,
+        status: &str,
+        duration_ms: Option<u64>,
+        args_preview: Option<String>,
+        result_preview: Option<String>,
+        error: Option<String>,
+    ) -> u64 {
+        self.push_with_origin("tool", kind, name, status, duration_ms, args_preview, result_preview, error)
+    }
+
+    /// Record an entry with an explicit origin ("tool" or "webview").
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_with_origin(
+        &self,
+        origin: &str,
         kind: &str,
         name: String,
         status: &str,
@@ -110,6 +144,7 @@ impl IpcBuffer {
             args_preview: cap(args_preview),
             result_preview: cap(result_preview),
             error: cap(error),
+            origin: origin.to_string(),
         };
 
         let mut guard = self.entries.lock();
@@ -225,6 +260,23 @@ pub fn exposed_commands() -> &'static [String] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_origin_tagging() {
+        let buf = IpcBuffer::new(10);
+        buf.push("invoke", "tool_cmd".into(), "ok", None, None, None, None);
+        buf.push_with_origin("webview", "invoke", "page_cmd".into(), "ok", None, None, None, None);
+
+        let (entries, _, _) = buf.query(None, None, None, None, 10);
+        assert_eq!(entries[0].origin, "tool");
+        assert_eq!(entries[1].origin, "webview");
+
+        // Tool-origin entries omit the field on the wire; webview ones carry it.
+        let tool_json = serde_json::to_value(&entries[0]).unwrap();
+        assert!(tool_json.get("origin").is_none());
+        let webview_json = serde_json::to_value(&entries[1]).unwrap();
+        assert_eq!(webview_json["origin"], "webview");
+    }
 
     #[test]
     fn test_push_and_query() {

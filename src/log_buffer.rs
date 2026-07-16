@@ -43,6 +43,7 @@ pub enum LogSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LogEntry {
     pub id: u64,
     /// Milliseconds since UNIX epoch.
@@ -453,6 +454,7 @@ pub struct LogQueryResult {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct LogCounts {
     pub error: u64,
     pub warn: u64,

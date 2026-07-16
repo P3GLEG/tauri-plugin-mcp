@@ -102,7 +102,7 @@ export function registerQueryLogsTool(server: McpServer) {
       since_id: z.number().int().nonnegative().optional()
         .describe("Pagination cursor — only return entries with id > this. Pair with nextCursor from prior call."),
       since_ms: z.number().int().nonnegative().optional()
-        .describe("Only return entries with timestamp (unix ms) >= this. Use Date.now() - N to get last N ms."),
+        .describe("Only return entries with timestamp (unix epoch ms) >= this. Prefer since_id or between (log_mark) for 'what just happened' queries — they don't require knowing the current time."),
       limit: z.number().int().min(1).max(1000).default(100)
         .describe("Max entries to return (1-1000). Default 100."),
       head: z.boolean().default(false)
