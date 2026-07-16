@@ -4,7 +4,8 @@ use image;
 use log::{debug, info, error};
 use tauri::Runtime;
 use core_graphics::display::{
-    CGWindowListCopyWindowInfo, kCGWindowListOptionAll, kCGWindowListExcludeDesktopElements,
+    CGWindowListCopyWindowInfo, kCGWindowListOptionAll, kCGWindowListOptionIncludingWindow,
+    kCGWindowListExcludeDesktopElements,
     kCGNullWindowID, CGWindowListCreateImage, CGRect, CGPoint, CGSize,
     kCGWindowImageDefault, kCGWindowImageBoundsIgnoreFraming,
 };
@@ -20,6 +21,7 @@ use crate::shared::ScreenshotParams;
 struct WindowInfo {
     window_id: u32,
     owner_name: String,
+    owner_pid: i32,
     name: String,
     layer: i32,
     bounds: (f64, f64, f64, f64), // x, y, width, height
@@ -58,6 +60,7 @@ fn get_all_windows_cg() -> Vec<WindowInfo> {
 
             // Extract window properties
             let owner_name = get_string_from_dict(&dict, "kCGWindowOwnerName").unwrap_or_default();
+            let owner_pid = get_number_from_dict(&dict, "kCGWindowOwnerPID").unwrap_or(0) as i32;
             let name = get_string_from_dict(&dict, "kCGWindowName").unwrap_or_default();
             let layer = get_number_from_dict(&dict, "kCGWindowLayer").unwrap_or(-1) as i32;
             let window_id = get_number_from_dict(&dict, "kCGWindowNumber").unwrap_or(0) as u32;
@@ -68,6 +71,7 @@ fn get_all_windows_cg() -> Vec<WindowInfo> {
             windows.push(WindowInfo {
                 window_id,
                 owner_name,
+                owner_pid,
                 name,
                 layer,
                 bounds,
@@ -144,9 +148,14 @@ fn capture_window_by_id(window_id: u32, bounds: (f64, f64, f64, f64)) -> Result<
     };
 
     unsafe {
+        // kCGWindowListOptionIncludingWindow renders the backing store of *this*
+        // window_id specifically. kCGWindowListOptionAll would ignore window_id and
+        // composite every window intersecting `rect`, which captures whatever is in
+        // that screen region on the active Space when the target window lives on
+        // another Space.
         let image_ref = CGWindowListCreateImage(
             rect,
-            kCGWindowListOptionAll,
+            kCGWindowListOptionIncludingWindow,
             window_id,
             kCGWindowImageDefault | kCGWindowImageBoundsIgnoreFraming,
         );
@@ -209,6 +218,45 @@ pub async fn take_screenshot<R: Runtime>(
 
     handle_screenshot_task(move || {
         info!("[TAURI-MCP] Looking for window with title: {} (label: {})", window_title, window_label);
+
+        // Preferred path: capture *our own* window deterministically by its
+        // CoreGraphics window ID. The plugin runs inside the Tauri app process,
+        // so any window owned by our PID is unambiguously ours. This is immune to
+        // title ambiguity (overlay / hidden-title / transparent windows report an
+        // empty CG title) and works even when the window is on another Space,
+        // where xcap's title-based matching silently captures the wrong window.
+        let own_pid = std::process::id() as i32;
+        let cg_windows = get_all_windows_cg();
+        let own_windows: Vec<&WindowInfo> = cg_windows
+            .iter()
+            .filter(|w| w.owner_pid == own_pid && w.layer == 0 && w.bounds.2 > 100.0 && w.bounds.3 > 100.0)
+            .collect();
+        if !own_windows.is_empty() {
+            // Prefer an exact title match (disambiguates multi-window apps);
+            // otherwise the largest own window (single-window apps, including
+            // empty-title overlay windows).
+            let target = own_windows
+                .iter()
+                .find(|w| !window_title.is_empty() && w.name == window_title)
+                .copied()
+                .or_else(|| {
+                    own_windows.iter().copied().max_by(|a, b| {
+                        (a.bounds.2 * a.bounds.3)
+                            .partial_cmp(&(b.bounds.2 * b.bounds.3))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                });
+            if let Some(window_info) = target {
+                info!(
+                    "[TAURI-MCP] Capturing own window by PID match: id={}, name='{}', pid={}",
+                    window_info.window_id, window_info.name, window_info.owner_pid
+                );
+                let image = capture_window_by_id(window_info.window_id, window_info.bounds)?;
+                info!("[TAURI-MCP] Successfully captured window image: {}x{}", image.width(), image.height());
+                let dynamic_image = image::DynamicImage::ImageRgba8(image);
+                return finalize_screenshot(dynamic_image, &params_clone);
+            }
+        }
 
         // First try xcap (works for most windows)
         let xcap_windows = xcap::Window::all().unwrap_or_default();
