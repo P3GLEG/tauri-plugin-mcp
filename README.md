@@ -2,6 +2,8 @@
 
 A Tauri plugin and MCP server that allow AI agents such as Cursor and Claude Code to interact with and debug your Tauri application through screenshots, DOM access, input simulation, and more.
 
+Upgrading? Behavior changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 ## Install
 
 ### npm (guest-js bindings)
@@ -31,16 +33,16 @@ The MCP server exposes 15 high-level tools to AI agents:
 |------|-------------|
 | **take_screenshot** | Captures a screenshot of an application window. Saves full image to disk with small thumbnail inline (optimized for token efficiency). |
 | **query_page** | Inspects the current page. Modes: `map` (structured element refs), `html` (raw DOM), `state` (URL/title/scroll/viewport), `find_element` (CSS pixel coordinates for clicking), `app_info` (app metadata, windows, monitors). |
-| **click** | Clicks at x/y coordinates or via selector (ref, id, class, css, tag, text). Selector-based clicks auto-resolve element position. |
+| **click** | Clicks via selector (ref, id, class, css, tag, text) or at raw x/y coordinates. Selector-based left clicks dispatch synthetic pointer events at the element (no OS permissions needed); right/middle/double and raw x/y clicks use native clicking. |
 | **type_text** | Types text into the page. Supports a `fields` array for bulk form fill, selector targeting, or typing into the focused element. Selects options in `<select>` dropdowns by value or label, and attaches files to `<input type="file">` via a `files` array. Works with inputs, textareas, contentEditable, React, Lexical, and Slate. |
 | **press_key** | Presses keyboard keys the typing tools can't express: Escape, Enter, Tab, arrows, Backspace/Delete, F-keys, and modifier chords (cmd+a). Emulates default actions (Enter submits, Tab moves focus) unless the app prevents them. |
 | **mouse_action** | Non-click mouse actions: `hover`, `scroll` (by direction/amount/to element/to top/bottom), `drag` (start to end coordinates). |
 | **navigate** | Webview navigation: `goto` (URL), `back`/`forward` (with optional delta), `reload`. |
-| **execute_js** | Runs arbitrary JavaScript in the webview. Returns the result of the last statement or promise. |
+| **execute_js** | Runs arbitrary JavaScript in the webview. Returns the last expression's value; promises are awaited. The universal escape hatch. |
 | **manage_storage** | localStorage operations (get/set/remove/clear/keys) and cookie management (get/clear). |
 | **manage_window** | Window control (list/focus/minimize/maximize/close/position/size/fullscreen), zoom, devtools, and webview state management. |
 | **wait_for** | Waits for a condition: text appearing/disappearing, element visible/hidden/attached/detached. Useful after async content loads. |
-| **restart_app** | Restarts the Tauri application and waits for it to come back online. Force-kills a frozen app (IPC mode only). |
+| **restart_app** | Restarts the Tauri application and waits for it to come back online. Force-kills a frozen app (IPC mode only). Refuses under `tauri dev` — restarting would orphan the app outside the dev supervisor; reload the frontend with `navigate` instead. |
 | **manage_ipc** | Tauri IPC access: `invoke` any `#[tauri::command]` with JSON args through the app's real IPC path, inspect captured webview↔Rust invoke traffic (names, args/result previews, latency, error rates), emit Tauri events, and wait for a named event to fire. Entries an app self-reports via `push_ipc` are labeled `[self-reported]` — any page script can forge them, so they're surfaced as untrusted. |
 | **query_logs** | Queries buffered app logs (Rust `log!()` output, webview `console.*` calls, and intercepted dialogs) with level/source/substring filters, pagination, and a summary mode. |
 | **log_mark** | Inserts begin/end markers into the log buffer so `query_logs` can return exactly the logs produced by an action. |
@@ -254,9 +256,9 @@ Known limitations: on Windows, the named pipe and token file currently use defau
 
 3. **"Permission denied"** — On Unix, check file permissions for the socket. TCP mode avoids file permission issues.
 
-5. **Console/dialog logs and IPC capture stay empty, but other tools work** — Tauri's ACL is denying the webview→plugin commands. Check `window.__TAURI_MCP_LOG_STATS__` in the app's devtools console: if `err` is climbing and the last error is `"mcp.push_log not allowed"`, your app's `app.security.capabilities` allowlist doesn't include the mcp capability. See the note under *Initialize the guest bindings* above.
+4. **Console/dialog logs and IPC capture stay empty, but other tools work** — Tauri's ACL is denying the webview→plugin commands. Check `window.__TAURI_MCP_LOG_STATS__` in the app's devtools console: if `err` is climbing and the last error is `"mcp.push_log not allowed"`, your app's `app.security.capabilities` allowlist doesn't include the mcp capability. See the note under *Initialize the guest bindings* above.
 
-4. **Testing your setup:**
+5. **Testing your setup:**
    ```bash
    npx @modelcontextprotocol/inspector npx tauri-plugin-mcp-server
    ```
