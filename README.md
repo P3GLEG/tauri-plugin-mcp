@@ -94,6 +94,8 @@ if (import.meta.env.DEV) {
 
 Like the Rust side, gate it to development builds.
 
+> **If your app defines an explicit `app.security.capabilities` list in `tauri.conf.json`, you must add the plugin's capability to it.** In Tauri v2 a non-empty `capabilities` list is an *allowlist* — capabilities not named in it are silently ignored, even though they compile. If the list omits the mcp capability, the webview→plugin commands (`push_log`, `push_ipc`) are denied with `"mcp.push_log not allowed"`, and console/dialog logging and IPC capture silently produce nothing while every other tool keeps working (socket-driven tools don't go through this path). Symptom: `window.__TAURI_MCP_LOG_STATS__` in the webview shows `ok: 0, err: N`. Either grant the mcp capability in a capability file and remove the explicit allowlist (Tauri then auto-enables all capability files), or add the capability's identifier to the list — dev-only, since a release build won't have compiled it.
+
 ### 3. Configure your AI agent
 
 #### IPC Mode (default, recommended)
@@ -250,6 +252,8 @@ Known limitations: on Windows, the named pipe and token file currently use defau
 2. **"Socket file not found" (IPC)** — Check that the socket path exists (look in `/tmp` on macOS/Linux). Try TCP mode as an alternative.
 
 3. **"Permission denied"** — On Unix, check file permissions for the socket. TCP mode avoids file permission issues.
+
+5. **Console/dialog logs and IPC capture stay empty, but other tools work** — Tauri's ACL is denying the webview→plugin commands. Check `window.__TAURI_MCP_LOG_STATS__` in the app's devtools console: if `err` is climbing and the last error is `"mcp.push_log not allowed"`, your app's `app.security.capabilities` allowlist doesn't include the mcp capability. See the note under *Initialize the guest bindings* above.
 
 4. **Testing your setup:**
    ```bash
