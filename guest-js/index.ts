@@ -487,35 +487,33 @@ function clickElement(element: Element, centerX: number, centerY: number) {
             _lastFocusedElement = element;
         }
 
-        // Create and dispatch mouse events
-        const mouseDown = new MouseEvent('mousedown', {
+        // Dispatch the full modern event sequence a real click produces:
+        // pointerdown → mousedown → pointerup → mouseup → click.
+        // Many component libraries (Radix, Headless UI, custom
+        // pointer-event handlers) listen for PointerEvents and ignore
+        // plain MouseEvents entirely — without pointerdown/pointerup
+        // those elements never activate.
+        const base = {
             bubbles: true,
             cancelable: true,
+            composed: true,
             view: window,
             clientX: centerX,
-            clientY: centerY
-        });
+            clientY: centerY,
+            button: 0,
+        };
+        const pointerBase = {
+            ...base,
+            pointerId: 1,
+            isPrimary: true,
+            pointerType: 'mouse' as const,
+        };
 
-        const mouseUp = new MouseEvent('mouseup', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: centerX,
-            clientY: centerY
-        });
-
-        const click = new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            view: window,
-            clientX: centerX,
-            clientY: centerY
-        });
-
-        // Dispatch the events
-        element.dispatchEvent(mouseDown);
-        element.dispatchEvent(mouseUp);
-        element.dispatchEvent(click);
+        element.dispatchEvent(new PointerEvent('pointerdown', { ...pointerBase, buttons: 1 }));
+        element.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1 }));
+        element.dispatchEvent(new PointerEvent('pointerup', { ...pointerBase, buttons: 0 }));
+        element.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+        element.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0, detail: 1 }));
 
         return {
             success: true,
@@ -908,7 +906,22 @@ function buildPageMapEntry(el: Element, interactiveOnly: boolean): PageMapElemen
     if (ariaLabel && ariaLabel !== text) entry.ariaLabel = ariaLabel;
 
     const role = el.getAttribute('role');
-    if (role) entry.role = role;
+    if (role) {
+        entry.role = role;
+        // ARIA widget state: without this an agent can't tell which
+        // radio/tab/switch in a group is active.
+        if (role === 'radio' || role === 'checkbox' || role === 'switch') {
+            const checked = el.getAttribute('aria-checked');
+            if (checked !== null) entry.checked = checked === 'true';
+        } else if (role === 'tab' || role === 'option') {
+            const selected = el.getAttribute('aria-selected');
+            if (selected !== null) entry.checked = selected === 'true';
+        }
+    }
+    if (entry.checked === undefined) {
+        const pressed = el.getAttribute('aria-pressed');
+        if (pressed !== null) entry.checked = pressed === 'true';
+    }
 
     if (el.id) entry.id = el.id;
 
