@@ -2,7 +2,12 @@
   "name": "tauri-plugin-mcp",
   "version": "0.2.0",
   "author": "Pegleg",
-  "description": "",
+  "description": "Guest bindings for tauri-plugin-mcp — lets AI agents interact with and debug Tauri apps",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/P3GLEG/tauri-plugin-mcp.git"
+  },
+  "license": "MIT",
   "type": "module",
   "types": "./dist-js/index.d.ts",
   "main": "./dist-js/index.cjs",
