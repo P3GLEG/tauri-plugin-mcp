@@ -241,9 +241,10 @@ Known limitations: on Windows, the named pipe and token file currently use defau
 
 ### Platform notes
 
-- **macOS**: Native `NSEvent` injection — no Accessibility permissions needed
-- **Windows/Linux**: JS-based input fallback (`isTrusted=false`, ~80% coverage)
-- **Screenshots**: macOS/Windows use native capture; Linux uses `xcap`
+- **macOS keyboard** (`type_text`): native `NSEvent` injection — no Accessibility permission needed.
+- **macOS native mouse** (`mouse_action` hover/drag, and `click` with raw x/y): posted via `CGEventPost`, which the window server **silently drops unless the process is trusted for Accessibility**. Grant it under System Settings → Privacy & Security → Accessibility for the process running the app (your terminal in dev, or the app bundle), then restart. Without it these calls return a clear error. **Selector-based clicks (`click` with `selector_type`/`selector_value`) dispatch synthetic DOM events and need no permission — prefer them.**
+- **Windows/Linux**: JS-based input fallback (`isTrusted=false`, ~80% coverage).
+- **Screenshots**: macOS/Windows use native capture; Linux uses `xcap`.
 
 ## Troubleshooting
 

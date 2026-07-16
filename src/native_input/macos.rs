@@ -224,6 +224,11 @@ unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
 }
 
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+}
+
 /// A mouse button held open by a `mouse_down`-only call, plus the last
 /// position it was posted at so it can be released at the same point.
 #[derive(Clone, Copy)]
@@ -386,6 +391,24 @@ pub fn inject_mouse<R: Runtime>(
     let mouse_down = params.mouse_down;
     let mouse_up = params.mouse_up;
     let wants_button_event = click || mouse_down || mouse_up;
+
+    // Native mouse events go through CGEventPost(kCGHIDEventTap), which the
+    // window server silently drops unless the host process is trusted for
+    // Accessibility. Without this check the tool reports success while the
+    // click lands nowhere. Fail loudly with guidance instead — selector-based
+    // clicks (click with selector_type/selector_value) use synthetic DOM
+    // events and need no permission, so steer callers there.
+    if unsafe { !AXIsProcessTrusted() } {
+        return Err(Error::Anyhow(
+            "macOS Accessibility permission is required for native mouse events \
+             (hover, drag, and raw x/y clicks). Grant it in System Settings → \
+             Privacy & Security → Accessibility for the process running this app \
+             (your terminal in dev, or the app bundle), then restart it. \
+             Tip: selector-based clicks (pass selector_type/selector_value to the \
+             click tool) dispatch synthetic DOM events and do NOT need this permission."
+                .to_string(),
+        ));
+    }
 
     let (tx, rx) = mpsc::channel();
 
