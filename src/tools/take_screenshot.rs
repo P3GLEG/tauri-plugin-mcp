@@ -9,6 +9,17 @@ use crate::TauriMcpExt;
 use crate::models::ScreenshotRequest;
 use crate::socket_server::SocketResponse;
 
+/// Encode an image as JPEG at the given quality. JPEG has no alpha channel
+/// and image 0.25's encoder rejects RGBA input, so convert to RGB first.
+fn encode_jpeg(image: &DynamicImage, quality: u8, out: &mut Vec<u8>) -> Result<()> {
+    out.clear();
+    let rgb = image.to_rgb8();
+    let mut cursor = std::io::Cursor::new(out);
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
+    rgb.write_with_encoder(encoder)
+        .map_err(|e| Error::WindowOperationFailed(format!("Failed to encode JPEG: {}", e)))
+}
+
 /// Resize and compress a DynamicImage to JPEG bytes based on params.
 /// Returns (jpeg_bytes, final_width, final_height).
 pub fn process_image_to_bytes(
@@ -49,10 +60,7 @@ pub fn process_image_to_bytes(
     let mut current_quality = quality;
 
     // Try encoding with JPEG
-    dynamic_image.write_to(
-        &mut std::io::Cursor::new(&mut output_data),
-        image::ImageOutputFormat::Jpeg(current_quality),
-    ).map_err(|e| Error::WindowOperationFailed(format!("Failed to encode JPEG: {}", e)))?;
+    encode_jpeg(&dynamic_image, current_quality, &mut output_data)?;
 
     // Reduce quality if needed to meet max size
     while output_data.len() as u64 > max_size_bytes && current_quality > 30 {
@@ -63,11 +71,7 @@ pub fn process_image_to_bytes(
             current_quality - 10
         );
         current_quality -= 10;
-        output_data.clear();
-        dynamic_image.write_to(
-            &mut std::io::Cursor::new(&mut output_data),
-            image::ImageOutputFormat::Jpeg(current_quality),
-        ).map_err(|e| Error::WindowOperationFailed(format!("Failed to re-encode JPEG: {}", e)))?;
+        encode_jpeg(&dynamic_image, current_quality, &mut output_data)?;
     }
 
     // If still too large, resize the image
@@ -84,11 +88,7 @@ pub fn process_image_to_bytes(
                 new_height,
                 image::imageops::FilterType::Triangle,
             );
-            output_data.clear();
-            dynamic_image.write_to(
-                &mut std::io::Cursor::new(&mut output_data),
-                image::ImageOutputFormat::Jpeg(current_quality),
-            ).map_err(|e| Error::WindowOperationFailed(format!("Failed to encode resized image: {}", e)))?;
+            encode_jpeg(&dynamic_image, current_quality, &mut output_data)?;
 
             if dynamic_image.width() <= 800 {
                 break;
@@ -310,5 +310,22 @@ pub async fn handle_take_screenshot<R: Runtime>(
             Ok(SocketResponse::ok(None, Some(data)))
         }
         Err(e) => Ok(SocketResponse::err(None, e.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_jpeg_accepts_rgba_input() {
+        // image 0.25's JPEG encoder rejects RGBA; encode_jpeg must convert.
+        let rgba = image::RgbaImage::from_pixel(64, 48, image::Rgba([200, 100, 50, 255]));
+        let img = DynamicImage::ImageRgba8(rgba);
+
+        let bytes = process_image_to_bytes(img, 70, None, 1024 * 1024).unwrap();
+        assert!(!bytes.is_empty());
+        // JPEG SOI marker
+        assert_eq!(&bytes[..2], &[0xFF, 0xD8]);
     }
 }

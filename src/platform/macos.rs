@@ -304,7 +304,7 @@ pub async fn take_screenshot<R: Runtime>(
 
         // Check if it's a permissions issue
         let only_menubar = xcap_windows.len() <= 1 && xcap_windows.iter().all(|w|
-            w.app_name() == "Window Server" || w.title() == "Menubar"
+            w.app_name().unwrap_or_default() == "Window Server" || w.title().unwrap_or_default() == "Menubar"
         );
 
         if only_menubar {
@@ -329,7 +329,7 @@ fn find_window(xcap_windows: &[xcap::Window], window_title: &str, application_na
     // Check if we might have a permissions issue (only Window Server menubar visible)
     if xcap_windows.len() <= 1 {
         let only_menubar = xcap_windows.iter().all(|w|
-            w.app_name() == "Window Server" || w.title() == "Menubar"
+            w.app_name().unwrap_or_default() == "Window Server" || w.title().unwrap_or_default() == "Menubar"
         );
         if only_menubar {
             error!("[TAURI-MCP] Permission issue detected: Only Window Server menubar is visible.");
@@ -341,9 +341,10 @@ fn find_window(xcap_windows: &[xcap::Window], window_title: &str, application_na
     let candidates: Vec<WindowMatchCandidate> = xcap_windows
         .iter()
         .map(|w| WindowMatchCandidate {
-            title: w.title().to_string(),
-            app_name: w.app_name().to_string(),
-            is_minimized: w.is_minimized(),
+            // xcap 0.9 returns Result from these accessors
+            title: w.title().unwrap_or_default(),
+            app_name: w.app_name().unwrap_or_default(),
+            is_minimized: w.is_minimized().unwrap_or(false),
         })
         .collect();
 

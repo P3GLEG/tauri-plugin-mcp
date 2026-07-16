@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux screenshot crash on windows with non-ASCII titles: bumped `xcap`
+  0.0.4 → 0.9 and `image` 0.24 → 0.25 (JPEG encoding now converts RGBA → RGB,
+  required by image 0.25). Ported from #22 — thanks @leiha.
+
 ## [0.2.0] - 2026-07-16
 
 ### ⚠️ Behavior changes (read before upgrading)
