@@ -72,9 +72,10 @@ fn find_window(xcap_windows: &[xcap::Window], window_title: &str, application_na
     let candidates: Vec<WindowMatchCandidate> = xcap_windows
         .iter()
         .map(|w| WindowMatchCandidate {
-            title: w.title().to_string(),
-            app_name: w.app_name().to_string(),
-            is_minimized: w.is_minimized(),
+            // xcap 0.9 returns Result from these accessors
+            title: w.title().unwrap_or_default(),
+            app_name: w.app_name().unwrap_or_default(),
+            is_minimized: w.is_minimized().unwrap_or(false),
         })
         .collect();
 
