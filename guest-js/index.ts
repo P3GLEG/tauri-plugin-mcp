@@ -472,6 +472,23 @@ function findElementByText(text: string): Element | null {
 // Helper function to click an element
 function clickElement(element: Element, centerX: number, centerY: number) {
     try {
+        // If the resolved element is not itself interactive (common with
+        // text matching, which finds the innermost element holding the
+        // text), climb to the nearest interactive ancestor — many apps
+        // attach their handler on a row/card container and ignore events
+        // whose dispatch target is an inner presentational node.
+        if (!isInteractive(element)) {
+            let p: Element | null = element.parentElement;
+            while (p && p !== document.body) {
+                if (isInteractive(p)) {
+                    console.log(`TAURI-PLUGIN-MCP: Click target <${element.tagName.toLowerCase()}> is not interactive; retargeting to ancestor <${p.tagName.toLowerCase()}${p.id ? '#' + p.id : ''}>`);
+                    element = p;
+                    break;
+                }
+                p = p.parentElement;
+            }
+        }
+
         // Explicitly focus the element before dispatching mouse events.
         // Synthetic dispatchEvent() does NOT trigger the browser's native focus
         // behavior the way a real user click does. Without this, document.activeElement

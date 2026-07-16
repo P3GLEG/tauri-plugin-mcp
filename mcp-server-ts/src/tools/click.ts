@@ -46,13 +46,23 @@ export function registerClickTool(server: McpServer) {
         let targetY = params.y;
         const windowLabel = params.window_label;
 
-        // If selector provided, resolve coordinates first
+        // If selector provided, click via the in-page synthetic pointer
+        // sequence (pointerdown→mousedown→pointerup→mouseup→click) instead
+        // of resolving coordinates and clicking natively. The JS path
+        // targets the exact element, is unaffected by display scale
+        // factors / window position, and works when the app window is not
+        // frontmost. Native clicking remains for raw x/y and for
+        // right/middle/double clicks, which the JS path can't express.
+        const useJsClick = params.selector_type && params.selector_value
+          && (params.button === undefined || params.button === "left")
+          && params.click_type !== "double";
+
         if (params.selector_type && params.selector_value) {
           const findPayload = {
             selector_type: params.selector_type,
             selector_value: params.selector_value,
             window_label: windowLabel ?? "main",
-            should_click: false,
+            should_click: useJsClick,
           };
           logCommandParams('get_element_position', findPayload);
           const findResult = await socketClient.sendCommand('get_element_position', findPayload);
@@ -64,6 +74,18 @@ export function registerClickTool(server: McpServer) {
           // Check for error in response
           if ('success' in findResult && !findResult.success) {
             return createErrorResponse(findResult.error || 'Failed to find element');
+          }
+
+          if (useJsClick) {
+            const data = (findResult as any).data ?? findResult;
+            const el = data.element || {};
+            const clickResult = data.clickResult || {};
+            if (clickResult.success === false) {
+              return createErrorResponse(`Element found but click dispatch failed: ${clickResult.error || 'unknown'}`);
+            }
+            return createSuccessResponse(
+              `Clicked <${(el.tag || 'element').toLowerCase()}${el.id ? ` id="${el.id}"` : ''}> via synthetic pointer events (resolved from ${params.selector_type}="${params.selector_value}")`
+            );
           }
 
           const coords = extractCoordinates(findResult);
