@@ -27,13 +27,17 @@ tauri-plugin-mcp = { git = "https://github.com/P3GLEG/tauri-plugin-mcp" }
 
 ## Tools
 
-The MCP server exposes 15 high-level tools to AI agents:
+The MCP server exposes 19 high-level tools to AI agents:
 
 | Tool | Description |
 |------|-------------|
 | **take_screenshot** | Captures a screenshot of an application window. Saves full image to disk with small thumbnail inline (optimized for token efficiency). |
 | **query_page** | Inspects the current page. Modes: `map` (structured element refs), `html` (raw DOM), `state` (URL/title/scroll/viewport), `find_element` (CSS pixel coordinates for clicking), `app_info` (app metadata, windows, monitors). |
-| **click** | Clicks via selector (ref, id, class, css, tag, text) or at raw x/y coordinates. Selector-based left clicks dispatch synthetic pointer events at the element (no OS permissions needed); right/middle/double and raw x/y clicks use native clicking. |
+| **click** | Clicks via selector (ref, id, class, css, tag, text) or at raw x/y coordinates. Selector-based left clicks dispatch synthetic pointer events at the element (no OS permissions needed); right/middle/double and raw x/y clicks use native clicking. `scope_selector`/`match`/`nth` disambiguate repeated matches. |
+| **read_text** | Reads visible text of elements matching a CSS selector: per-element `{tag, text, visible, attrs?}`, whitespace-collapsed, output hard-capped with a `truncated` flag. The structured replacement for execute_js text-scraping snippets. |
+| **inspect_element** | Bounding rect, computed styles (default layout/color set or explicit `style_props`), classList and attributes — for visual/layout QA without execute_js `getComputedStyle` snippets. |
+| **dispatch_pointer** | Synthetic pointer/mouse gesture chains (`click`, `dblclick`, `down`, `up`, `hover`, `drag`) on the exact matched element, no retargeting. Element-relative `offset` for canvas hit-testing; drags interpolate moves on the element and `document` (d3-drag compatible). Events are `isTrusted=false`. |
+| **app_bridge** | Calls helpers the host app registered via `window.__MCP_BRIDGE__.register(name, fn, description)` — `list` to discover, `call` to invoke (async supported, results serialized + truncated). The sanctioned path to app state instead of execute_js against internals. |
 | **type_text** | Types text into the page. Supports a `fields` array for bulk form fill, selector targeting, or typing into the focused element. Selects options in `<select>` dropdowns by value or label, and attaches files to `<input type="file">` via a `files` array. Works with inputs, textareas, contentEditable, React, Lexical, and Slate. |
 | **press_key** | Presses keyboard keys the typing tools can't express: Escape, Enter, Tab, arrows, Backspace/Delete, F-keys, and modifier chords (cmd+a). Emulates default actions (Enter submits, Tab moves focus) unless the app prevents them. |
 | **mouse_action** | Non-click mouse actions: `hover`, `scroll` (by direction/amount/to element/to top/bottom), `drag` (start to end coordinates). |

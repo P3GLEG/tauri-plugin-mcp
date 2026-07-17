@@ -6,12 +6,15 @@ use crate::shared::commands;
 use crate::socket_server::SocketResponse;
 
 // Export command modules
+pub mod app_bridge;
 pub mod app_info;
 pub mod cookies;
 #[cfg(feature = "devtools")]
 pub mod devtools;
+pub mod dispatch_pointer;
 pub mod events;
 pub mod execute_js;
+pub mod inspect_element;
 pub mod list_windows;
 pub mod local_storage;
 pub mod mouse_movement;
@@ -22,6 +25,7 @@ pub mod ping;
 pub mod push_ipc;
 pub mod push_log;
 pub mod query_logs;
+pub mod read_text;
 pub mod restart_app;
 pub mod take_screenshot;
 pub mod text_input;
@@ -31,12 +35,15 @@ pub mod window_manager;
 pub mod zoom;
 
 // Re-export command handler functions
+pub use app_bridge::handle_app_bridge;
 pub use app_info::handle_get_app_info;
 pub use cookies::handle_manage_cookies;
 #[cfg(feature = "devtools")]
 pub use devtools::handle_manage_devtools;
+pub use dispatch_pointer::handle_dispatch_pointer;
 pub use events::handle_manage_events;
 pub use execute_js::handle_execute_js;
+pub use inspect_element::handle_inspect_element;
 pub use list_windows::handle_list_windows;
 pub use local_storage::handle_get_local_storage;
 pub use mouse_movement::handle_simulate_mouse_movement;
@@ -45,6 +52,7 @@ pub use log_mark::handle_log_mark;
 pub use manage_ipc::handle_manage_ipc;
 pub use ping::handle_ping;
 pub use query_logs::handle_query_logs;
+pub use read_text::handle_read_text;
 pub use restart_app::handle_restart_app;
 pub use take_screenshot::handle_take_screenshot;
 pub use text_input::handle_simulate_text_input;
@@ -107,6 +115,10 @@ pub async fn handle_command<R: Runtime>(
         commands::RESTART_APP => handle_restart_app(app, payload).await,
         commands::QUERY_LOGS => handle_query_logs(app, payload).await,
         commands::LOG_MARK => handle_log_mark(app, payload).await,
+        commands::READ_TEXT => handle_read_text(app, payload).await,
+        commands::INSPECT_ELEMENT => handle_inspect_element(app, payload).await,
+        commands::DISPATCH_POINTER => handle_dispatch_pointer(app, payload).await,
+        commands::APP_BRIDGE => handle_app_bridge(app, payload).await,
         _ => Ok(SocketResponse::err(None, format!("Unknown command: {}", command))),
     };
 
@@ -187,12 +199,16 @@ mod tests {
             commands::RESTART_APP,
             commands::QUERY_LOGS,
             commands::LOG_MARK,
+            commands::READ_TEXT,
+            commands::INSPECT_ELEMENT,
+            commands::DISPATCH_POINTER,
+            commands::APP_BRIDGE,
         ];
 
         let mut seen = std::collections::HashSet::new();
         for cmd in &all_commands {
             assert!(seen.insert(*cmd), "Duplicate command constant: {}", cmd);
         }
-        assert_eq!(seen.len(), 31, "Expected 31 unique commands");
+        assert_eq!(seen.len(), 35, "Expected 35 unique commands");
     }
 }

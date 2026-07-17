@@ -80,6 +80,9 @@ export function registerQueryPageTool(server: McpServer) {
       selector_type: z.enum(["ref", "id", "class", "css", "tag", "text"]).optional().describe("(find_element) Selector type. 'ref' uses numbered reference from map mode. 'css' accepts any CSS selector."),
       selector_value: z.string().optional().describe("(find_element) Selector value. For 'ref', the ref number as string."),
       should_click: z.boolean().optional().describe("(find_element) Click the element once found. Default: false."),
+      find_scope_selector: z.string().optional().describe("(find_element) CSS selector limiting the search to one container."),
+      match: z.enum(["exact", "contains"]).optional().describe("(find_element, text selector) Text match mode. Default: exact first, then contains."),
+      nth: z.number().int().nonnegative().optional().describe("(find_element) Pick the nth match (0-based). Default: 0."),
     },
     {
       title: "Query Page Content and Elements",
@@ -168,12 +171,15 @@ export function registerQueryPageTool(server: McpServer) {
               return createErrorResponse("'selector_type' and 'selector_value' are required for find_element mode");
             }
 
-            const payload = {
+            const payload: Record<string, unknown> = {
               selector_type: params.selector_type,
               selector_value: params.selector_value,
               window_label,
               should_click: params.should_click ?? false,
             };
+            if (params.find_scope_selector !== undefined) payload.scope_selector = params.find_scope_selector;
+            if (params.match !== undefined) payload.match_mode = params.match;
+            if (params.nth !== undefined) payload.nth = params.nth;
 
             logCommandParams('get_element_position', payload);
             const result = await socketClient.sendCommand('get_element_position', payload);

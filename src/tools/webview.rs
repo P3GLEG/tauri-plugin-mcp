@@ -265,6 +265,12 @@ struct GetElementPositionPayload {
     should_click: bool,
     #[serde(default)]
     raw_coordinates: bool,
+    #[serde(default)]
+    scope_selector: Option<String>,
+    #[serde(default)]
+    match_mode: Option<String>,
+    #[serde(default)]
+    nth: Option<u32>,
 }
 
 pub async fn handle_get_element_position<R: Runtime>(
@@ -282,7 +288,10 @@ pub async fn handle_get_element_position<R: Runtime>(
         "selectorType": parsed.selector_type,
         "selectorValue": parsed.selector_value,
         "shouldClick": parsed.should_click,
-        "rawCoordinates": parsed.raw_coordinates
+        "rawCoordinates": parsed.raw_coordinates,
+        "scopeSelector": parsed.scope_selector,
+        "matchMode": parsed.match_mode,
+        "nth": parsed.nth
     });
 
     match emit_and_wait(

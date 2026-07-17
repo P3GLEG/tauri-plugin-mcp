@@ -31,6 +31,9 @@ export function registerClickTool(server: McpServer) {
       click_type: z.enum(["single", "double"]).optional().describe("Click type. 'double' sends two rapid clicks. Default: 'single'."),
       selector_type: z.enum(["ref", "id", "class", "css", "tag", "text"]).optional().describe("Selector type to find element. 'ref' uses numbered ref from query_page map mode. 'css' accepts any CSS selector."),
       selector_value: z.string().optional().describe("Selector value. For 'ref', provide the ref number as string."),
+      scope_selector: z.string().optional().describe("CSS selector limiting the search to one container (e.g. '.sidebar'). Applies to css/class/tag/text selectors."),
+      match: z.enum(["exact", "contains"]).optional().describe("(text selector) Text match mode. Default: exact first, then contains."),
+      nth: z.number().int().nonnegative().optional().describe("Pick the nth match (0-based) when the selector hits multiple elements. Default: 0."),
       window_label: z.string().optional().describe("Target window. Defaults to 'main'."),
     },
     {
@@ -58,12 +61,15 @@ export function registerClickTool(server: McpServer) {
           && params.click_type !== "double";
 
         if (params.selector_type && params.selector_value) {
-          const findPayload = {
+          const findPayload: Record<string, unknown> = {
             selector_type: params.selector_type,
             selector_value: params.selector_value,
             window_label: windowLabel ?? "main",
             should_click: useJsClick,
           };
+          if (params.scope_selector !== undefined) findPayload.scope_selector = params.scope_selector;
+          if (params.match !== undefined) findPayload.match_mode = params.match;
+          if (params.nth !== undefined) findPayload.nth = params.nth;
           logCommandParams('get_element_position', findPayload);
           const findResult = await socketClient.sendCommand('get_element_position', findPayload);
 

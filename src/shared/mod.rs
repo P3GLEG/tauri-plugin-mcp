@@ -148,4 +148,8 @@ pub mod commands {
     pub const RESTART_APP: &str = "restart_app";
     pub const QUERY_LOGS: &str = "query_logs";
     pub const LOG_MARK: &str = "log_mark";
+    pub const READ_TEXT: &str = "read_text";
+    pub const INSPECT_ELEMENT: &str = "inspect_element";
+    pub const DISPATCH_POINTER: &str = "dispatch_pointer";
+    pub const APP_BRIDGE: &str = "app_bridge";
 }

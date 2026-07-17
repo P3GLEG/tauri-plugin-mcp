@@ -77,6 +77,10 @@ let typeIntoFocusedUnlistenFunction: (() => void) | null = null;
 let pressKeyUnlistenFunction: (() => void) | null = null;
 let setFileInputUnlistenFunction: (() => void) | null = null;
 let ipcInvokeUnlistenFunction: (() => void) | null = null;
+let readTextUnlistenFunction: (() => void) | null = null;
+let inspectElementUnlistenFunction: (() => void) | null = null;
+let dispatchPointerUnlistenFunction: (() => void) | null = null;
+let appBridgeUnlistenFunction: (() => void) | null = null;
 
 // ---- Correlation ID helpers ----
 // Extract the _correlationId from an event payload (injected by Rust's emit_and_wait).
@@ -155,6 +159,14 @@ export async function setupPluginListeners() {
     pressKeyUnlistenFunction = await currentWindow.listen('press-key', handlePressKeyRequest);
     setFileInputUnlistenFunction = await currentWindow.listen('set-file-input', handleSetFileInputRequest);
     ipcInvokeUnlistenFunction = await currentWindow.listen('ipc-invoke', handleIpcInvokeRequest);
+    readTextUnlistenFunction = await currentWindow.listen('read-text', handleReadTextRequest);
+    inspectElementUnlistenFunction = await currentWindow.listen('inspect-element', handleInspectElementRequest);
+    dispatchPointerUnlistenFunction = await currentWindow.listen('dispatch-pointer', handleDispatchPointerRequest);
+    appBridgeUnlistenFunction = await currentWindow.listen('app-bridge', handleAppBridgeRequest);
+
+    // Install the app-helper bridge registry so the host app can register
+    // helpers whether it runs before or after this setup call.
+    ensureMcpBridge();
 
     console.log('TAURI-PLUGIN-MCP: All event listeners are set up on the current window.');
 }
@@ -238,6 +250,22 @@ export async function cleanupPluginListeners() {
         ipcInvokeUnlistenFunction();
         ipcInvokeUnlistenFunction = null;
     }
+    if (readTextUnlistenFunction) {
+        readTextUnlistenFunction();
+        readTextUnlistenFunction = null;
+    }
+    if (inspectElementUnlistenFunction) {
+        inspectElementUnlistenFunction();
+        inspectElementUnlistenFunction = null;
+    }
+    if (dispatchPointerUnlistenFunction) {
+        dispatchPointerUnlistenFunction();
+        dispatchPointerUnlistenFunction = null;
+    }
+    if (appBridgeUnlistenFunction) {
+        appBridgeUnlistenFunction();
+        appBridgeUnlistenFunction = null;
+    }
     console.log('TAURI-PLUGIN-MCP: All event listeners have been removed.');
 }
 
@@ -246,7 +274,18 @@ async function handleGetElementPositionRequest(event: any) {
     const correlationId = getCorrelationId(event.payload);
 
     try {
-        const { selectorType, selectorValue, shouldClick = false } = event.payload;
+        const { selectorType, selectorValue, shouldClick = false, scopeSelector = null, matchMode = null, nth = null } = event.payload;
+
+        // Resolve the search scope (defaults to the whole document)
+        let scopeRoot: ParentNode = document;
+        if (scopeSelector) {
+            const scoped = document.querySelector(scopeSelector);
+            if (!scoped) {
+                throw new Error(`scope_selector "${scopeSelector}" matched no element`);
+            }
+            scopeRoot = scoped;
+        }
+        const nthIndex = typeof nth === 'number' && nth >= 0 ? nth : 0;
 
         // Find the element based on the selector type
         let element = null;
@@ -269,38 +308,47 @@ async function handleGetElementPositionRequest(event: any) {
                     debugInfo.push(`No element found with id="${selectorValue}"`);
                 }
                 break;
-            case 'class':
-                // Get the first element with the class
-                const elemsByClass = document.getElementsByClassName(selectorValue);
-                element = elemsByClass.length > 0 ? elemsByClass[0] : null;
+            case 'class': {
+                // Get the nth element with the class (within scope)
+                const classSel = '.' + selectorValue.trim().split(/\s+/).join('.');
+                const elemsByClass = scopeRoot.querySelectorAll(classSel);
+                element = elemsByClass.length > nthIndex ? elemsByClass[nthIndex] : null;
                 if (!element) {
-                    debugInfo.push(`No elements found with class="${selectorValue}" (total matching: 0)`);
-                } else if (elemsByClass.length > 1) {
+                    debugInfo.push(`No elements found with class="${selectorValue}" at nth=${nthIndex} (total matching: ${elemsByClass.length})`);
+                } else if (elemsByClass.length > 1 && nthIndex === 0) {
                     debugInfo.push(`Found ${elemsByClass.length} elements with class="${selectorValue}", using the first one`);
                 }
                 break;
-            case 'tag':
-                // Get the first element with the tag name
-                const elemsByTag = document.getElementsByTagName(selectorValue);
-                element = elemsByTag.length > 0 ? elemsByTag[0] : null;
+            }
+            case 'tag': {
+                // Get the nth element with the tag name (within scope)
+                const elemsByTag = scopeRoot.querySelectorAll(selectorValue);
+                element = elemsByTag.length > nthIndex ? elemsByTag[nthIndex] : null;
                 if (!element) {
-                    debugInfo.push(`No elements found with tag="${selectorValue}" (total matching: 0)`);
-                } else if (elemsByTag.length > 1) {
+                    debugInfo.push(`No elements found with tag="${selectorValue}" at nth=${nthIndex} (total matching: ${elemsByTag.length})`);
+                } else if (elemsByTag.length > 1 && nthIndex === 0) {
                     debugInfo.push(`Found ${elemsByTag.length} elements with tag="${selectorValue}", using the first one`);
                 }
                 break;
-            case 'css':
-                // Any CSS selector — first match
-                element = document.querySelector(selectorValue);
+            }
+            case 'css': {
+                // Any CSS selector — nth match within scope
+                const elemsByCss = scopeRoot.querySelectorAll(selectorValue);
+                element = elemsByCss.length > nthIndex ? elemsByCss[nthIndex] : null;
                 if (!element) {
-                    debugInfo.push(`No element found matching CSS selector "${selectorValue}"`);
+                    debugInfo.push(`No element found matching CSS selector "${selectorValue}" at nth=${nthIndex} (total matching: ${elemsByCss.length})`);
                 }
                 break;
+            }
             case 'text':
-                // Find element by text content
-                element = findElementByText(selectorValue);
+                // Find element by text content (scope/match/nth aware)
+                element = findElementByText(selectorValue, {
+                    root: scopeRoot,
+                    match: matchMode === 'exact' || matchMode === 'contains' ? matchMode : 'auto',
+                    nth: nthIndex,
+                });
                 if (!element) {
-                    debugInfo.push(`No element found with text="${selectorValue}"`);
+                    debugInfo.push(`No element found with text="${selectorValue}"${scopeSelector ? ` within scope "${scopeSelector}"` : ''}${matchMode ? ` (match=${matchMode})` : ''}`);
                     // Check if any element contains part of the text (for debugging)
                     const containingElements = Array.from(document.querySelectorAll('*'))
                         .filter(el => el.textContent && el.textContent.includes(selectorValue));
@@ -420,64 +468,84 @@ async function handleGetElementPositionRequest(event: any) {
     }
 }
 
-// Helper function to find an element by its text content
-function findElementByText(text: string): Element | null {
-    // Get all elements in the document
-    const allElements = document.querySelectorAll('*');
-    
-    // First try exact text content matching
-    for (const element of allElements) {
-        // Check exact text content
-        if (element.textContent && element.textContent.trim() === text) {
-            return element;
-        }
-        
-        // Check placeholder attribute (for input fields)
-        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-            if (element.placeholder === text) {
-                return element;
-            }
-        }
-        
-        // Check title attribute
-        if (element.getAttribute('title') === text) {
-            return element;
-        }
-        
-        // Check aria-label attribute
-        if (element.getAttribute('aria-label') === text) {
-            return element;
-        }
+// Options for text-based element lookup
+interface FindTextOptions {
+    root?: ParentNode;                       // scope of the search (default: document)
+    match?: 'exact' | 'contains' | 'auto';   // 'auto' = exact first, then contains
+    nth?: number;                            // pick the nth candidate (0-based)
+}
+
+// Does this element match the text, either in content or in the
+// placeholder/title/aria-label attributes?
+function elementMatchesText(element: Element, text: string, exact: boolean): boolean {
+    const content = element.textContent?.trim();
+    if (content && (exact ? content === text : content.includes(text))) return true;
+
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+        const ph = element.placeholder;
+        if (ph && (exact ? ph === text : ph.includes(text))) return true;
     }
-    
-    // If no exact match, try partial text content matching
-    for (const element of allElements) {
-        // Check if text is contained within the element's text
-        if (element.textContent && element.textContent.trim().includes(text)) {
-            return element;
-        }
-        
-        // Check if text is contained within placeholder
-        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-            if (element.placeholder && element.placeholder.includes(text)) {
-                return element;
-            }
-        }
-        
-        // Check partial match in title attribute
-        const title = element.getAttribute('title');
-        if (title && title.includes(text)) {
-            return element;
-        }
-        
-        // Check partial match in aria-label attribute
-        const ariaLabel = element.getAttribute('aria-label');
-        if (ariaLabel && ariaLabel.includes(text)) {
-            return element;
-        }
+
+    const title = element.getAttribute('title');
+    if (title && (exact ? title === text : title.includes(text))) return true;
+
+    const ariaLabel = element.getAttribute('aria-label');
+    if (ariaLabel && (exact ? ariaLabel === text : ariaLabel.includes(text))) return true;
+
+    return false;
+}
+
+// Helper function to find an element by its text content.
+// Every ancestor of a matching node also textContent-matches, so a naive
+// first-hit scan returns huge container divs. Instead: collect all matches,
+// keep only the innermost ones, then hoist each to its nearest interactive
+// matching ancestor (the button whose label matched, not the label's span).
+function findElementByText(text: string, opts: FindTextOptions = {}): Element | null {
+    const root = opts.root ?? document;
+    const matchMode = opts.match ?? 'auto';
+    const nth = opts.nth ?? 0;
+
+    const allElements = Array.from(root.querySelectorAll('*'));
+    const collect = (exact: boolean) => allElements.filter(el => elementMatchesText(el, text, exact));
+
+    let candidates: Element[];
+    if (matchMode === 'exact') {
+        candidates = collect(true);
+    } else if (matchMode === 'contains') {
+        candidates = collect(false);
+    } else {
+        candidates = collect(true);
+        if (candidates.length === 0) candidates = collect(false);
     }
-    
-    return null;
+    if (candidates.length === 0) return null;
+
+    const candidateSet = new Set(candidates);
+    const innermost = candidates.filter(c => !candidates.some(o => o !== c && c.contains(o)));
+
+    // Hoist each innermost match to the closest ancestor that also matched
+    // AND is interactive — that's the element whose handler the text labels.
+    const hoisted: Element[] = [];
+    for (const el of innermost) {
+        let pick = el;
+        let p: Element | null = el;
+        while (p && p !== document.body) {
+            if (candidateSet.has(p) && isInteractive(p)) {
+                pick = p;
+                break;
+            }
+            p = p.parentElement;
+        }
+        if (!hoisted.includes(pick)) hoisted.push(pick);
+    }
+
+    // Rank: interactive first, then semantic, then shortest text (tightest fit).
+    const rank = (el: Element) => (isInteractive(el) ? 0 : isSemanticElement(el) ? 1 : 2);
+    hoisted.sort((a, b) =>
+        rank(a) - rank(b) ||
+        (a.textContent?.trim().length ?? 0) - (b.textContent?.trim().length ?? 0)
+    );
+
+    return hoisted[nth] ?? null;
 }
 
 // Helper function to click an element
@@ -554,6 +622,408 @@ function clickElement(element: Element, centerX: number, centerY: number) {
             success: false,
             error: error instanceof Error ? error.toString() : String(error)
         };
+    }
+}
+
+// ---- read_text: structured text scraping without execute_js ----
+
+async function handleReadTextRequest(event: any) {
+    const correlationId = getCorrelationId(event.payload);
+    try {
+        const { selector, all = true, limit = 20, attrs = null, maxChars = 4000, scopeSelector = null } = event.payload;
+        if (!selector || typeof selector !== 'string') {
+            throw new Error('read_text requires a CSS "selector" string');
+        }
+
+        let root: ParentNode = document;
+        if (scopeSelector) {
+            const scoped = document.querySelector(scopeSelector);
+            if (!scoped) throw new Error(`scope_selector "${scopeSelector}" matched no element`);
+            root = scoped;
+        }
+
+        const nodes = Array.from(root.querySelectorAll(selector));
+        const totalMatches = nodes.length;
+        const selected = all ? nodes.slice(0, Math.max(1, limit)) : nodes.slice(0, 1);
+        // Split the total character budget across the selected elements,
+        // but never below a floor that keeps single entries meaningful.
+        const perElement = Math.max(80, Math.floor(maxChars / Math.max(1, selected.length)));
+        let truncated = totalMatches > selected.length;
+
+        const matches = selected.map(el => {
+            const raw = (el instanceof HTMLElement ? el.innerText : el.textContent) || '';
+            let text = raw.replace(/\s+/g, ' ').trim();
+            if (text.length > perElement) {
+                text = text.slice(0, perElement) + `…[+${raw.length - perElement} chars]`;
+                truncated = true;
+            }
+            const entry: any = {
+                tag: el.tagName.toLowerCase(),
+                text,
+                visible: isElementVisible(el),
+            };
+            if (Array.isArray(attrs) && attrs.length > 0) {
+                const collected: Record<string, string | null> = {};
+                for (const name of attrs) collected[name] = el.getAttribute(name);
+                entry.attrs = collected;
+            }
+            return entry;
+        });
+
+        await emitResponse('read-text-response', correlationId, {
+            success: true,
+            data: { matches, total_matches: totalMatches, truncated },
+        });
+    } catch (error) {
+        console.error('TAURI-PLUGIN-MCP: Error handling read-text request', error);
+        await emitResponse('read-text-response', correlationId, {
+            success: false,
+            error: error instanceof Error ? error.toString() : String(error),
+        }).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
+    }
+}
+
+// ---- inspect_element: rect + computed styles for visual QA ----
+
+const DEFAULT_INSPECT_STYLE_PROPS = [
+    'display', 'position', 'padding', 'margin', 'color', 'background-color',
+    'font-size', 'font-weight', 'z-index', 'opacity', 'overflow',
+    'flex-direction', 'gap', 'border-radius',
+];
+
+async function handleInspectElementRequest(event: any) {
+    const correlationId = getCorrelationId(event.payload);
+    try {
+        const { selector, all = false, limit = 10, styleProps = null } = event.payload;
+        if (!selector || typeof selector !== 'string') {
+            throw new Error('inspect_element requires a CSS "selector" string');
+        }
+
+        const nodes = Array.from(document.querySelectorAll(selector));
+        if (nodes.length === 0) {
+            throw new Error(`No element found matching CSS selector "${selector}"`);
+        }
+        const selected = all ? nodes.slice(0, Math.max(1, limit)) : nodes.slice(0, 1);
+        const props: string[] = Array.isArray(styleProps) && styleProps.length > 0
+            ? styleProps
+            : DEFAULT_INSPECT_STYLE_PROPS;
+
+        const elements = selected.map(el => {
+            const rect = el.getBoundingClientRect();
+            const computed = window.getComputedStyle(el);
+            const styles: Record<string, string> = {};
+            for (const prop of props) styles[prop] = computed.getPropertyValue(prop);
+
+            const attributes: Record<string, string> = {};
+            for (const attr of Array.from(el.attributes)) {
+                if (attr.name === 'style' || attr.name === 'class') continue;
+                attributes[attr.name] = attr.value;
+            }
+
+            return {
+                tag: el.tagName.toLowerCase(),
+                id: el.id || null,
+                classList: Array.from(el.classList),
+                rect: {
+                    x: Math.round(rect.x * 100) / 100,
+                    y: Math.round(rect.y * 100) / 100,
+                    width: Math.round(rect.width * 100) / 100,
+                    height: Math.round(rect.height * 100) / 100,
+                },
+                visible: isElementVisible(el),
+                attrs: attributes,
+                styles,
+            };
+        });
+
+        await emitResponse('inspect-element-response', correlationId, {
+            success: true,
+            data: { elements, total_matches: nodes.length },
+        });
+    } catch (error) {
+        console.error('TAURI-PLUGIN-MCP: Error handling inspect-element request', error);
+        await emitResponse('inspect-element-response', correlationId, {
+            success: false,
+            error: error instanceof Error ? error.toString() : String(error),
+        }).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
+    }
+}
+
+// ---- dispatch_pointer: synthetic pointer/mouse gestures at coordinates ----
+// For canvases, backdrops, drags and hovers — targets that the click tool's
+// interactive-ancestor retargeting would deliberately avoid. Dispatches on
+// the EXACT resolved element, no retargeting.
+
+interface PointerGestureOptions {
+    x: number;               // viewport CSS px
+    y: number;
+    button: number;
+    modifiers: string[];
+    to?: { x: number; y: number };
+    steps: number;
+}
+
+function pointerOpts(x: number, y: number, button: number, buttons: number, modifiers: string[], extra: Record<string, any> = {}) {
+    return {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        button,
+        buttons,
+        shiftKey: modifiers.includes('shift'),
+        ctrlKey: modifiers.includes('ctrl'),
+        altKey: modifiers.includes('alt'),
+        metaKey: modifiers.includes('meta'),
+        ...extra,
+    };
+}
+
+function dispatchPointerGesture(el: Element, gesture: string, opts: PointerGestureOptions): string[] {
+    const { x, y, button, modifiers, to, steps } = opts;
+    const dispatched: string[] = [];
+    const pBase = { pointerId: 1, isPrimary: true, pointerType: 'mouse' as const };
+    const downButtons = button === 2 ? 2 : button === 1 ? 4 : 1;
+
+    const fire = (target: EventTarget, name: string, px: number, py: number, buttons: number, extra: Record<string, any> = {}) => {
+        const base = pointerOpts(px, py, button, buttons, modifiers, extra);
+        const ev = name.startsWith('pointer')
+            ? new PointerEvent(name, { ...base, ...pBase })
+            : new MouseEvent(name, base);
+        target.dispatchEvent(ev);
+        if (target === el) dispatched.push(name);
+    };
+
+    const down = (px: number, py: number) => {
+        fire(el, 'pointerdown', px, py, downButtons);
+        fire(el, 'mousedown', px, py, downButtons);
+    };
+    const up = (px: number, py: number) => {
+        fire(el, 'pointerup', px, py, 0);
+        fire(el, 'mouseup', px, py, 0);
+    };
+    const click = (px: number, py: number, detail = 1) => {
+        fire(el, 'click', px, py, 0, { detail });
+    };
+
+    switch (gesture) {
+        case 'down':
+            down(x, y);
+            break;
+        case 'up':
+            up(x, y);
+            fire(el, 'click', x, y, 0, { detail: 1 });
+            break;
+        case 'click':
+            down(x, y);
+            up(x, y);
+            click(x, y);
+            break;
+        case 'dblclick':
+            down(x, y); up(x, y); click(x, y, 1);
+            down(x, y); up(x, y); click(x, y, 2);
+            fire(el, 'dblclick', x, y, 0, { detail: 2 });
+            break;
+        case 'hover':
+            fire(el, 'pointerover', x, y, 0);
+            fire(el, 'pointerenter', x, y, 0);
+            fire(el, 'pointermove', x, y, 0);
+            fire(el, 'mouseover', x, y, 0);
+            fire(el, 'mouseenter', x, y, 0);
+            fire(el, 'mousemove', x, y, 0);
+            break;
+        case 'drag': {
+            if (!to) throw new Error("gesture 'drag' requires a 'to' destination");
+            down(x, y);
+            const n = Math.max(1, steps);
+            for (let i = 1; i <= n; i++) {
+                const mx = x + ((to.x - x) * i) / n;
+                const my = y + ((to.y - y) * i) / n;
+                // Dispatch moves on the element AND document: libraries like
+                // d3-drag re-listen on window after pointerdown, and synthetic
+                // events bypass setPointerCapture entirely.
+                fire(el, 'pointermove', mx, my, downButtons);
+                fire(el, 'mousemove', mx, my, downButtons);
+                fire(document, 'pointermove', mx, my, downButtons);
+                fire(document, 'mousemove', mx, my, downButtons);
+            }
+            fire(el, 'pointerup', to.x, to.y, 0);
+            fire(el, 'mouseup', to.x, to.y, 0);
+            fire(document, 'pointerup', to.x, to.y, 0);
+            fire(document, 'mouseup', to.x, to.y, 0);
+            break;
+        }
+        default:
+            throw new Error(`Unsupported gesture: ${gesture}. Use click|dblclick|down|up|hover|drag.`);
+    }
+
+    return dispatched;
+}
+
+async function handleDispatchPointerRequest(event: any) {
+    const correlationId = getCorrelationId(event.payload);
+    try {
+        const {
+            selectorType = 'css', selectorValue, gesture,
+            offset = null, to = null, steps = 8, button = 0, modifiers = null,
+        } = event.payload;
+
+        if (!selectorValue) throw new Error('dispatch_pointer requires selector_value');
+        if (!gesture) throw new Error('dispatch_pointer requires gesture');
+
+        let element: Element | null = null;
+        if (selectorType === 'ref') {
+            const refNum = parseInt(selectorValue, 10);
+            element = getElementByRef(refNum);
+            if (!element) {
+                throw new Error(isRefDetached(refNum)
+                    ? `Element ref=${refNum} is no longer attached to the DOM. Re-run query_page(mode='map') for fresh refs.`
+                    : `No element found with ref=${refNum}. Run query_page(mode='map') first.`);
+            }
+        } else {
+            element = document.querySelector(selectorValue);
+            if (!element) throw new Error(`No element found matching CSS selector "${selectorValue}"`);
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) {
+            throw new Error(`Element "${selectorValue}" has a zero-size bounding box (hidden or unrendered).`);
+        }
+
+        // Origin: element top-left + offset, defaulting to the center.
+        const originX = offset && typeof offset.x === 'number' ? rect.left + offset.x : rect.left + rect.width / 2;
+        const originY = offset && typeof offset.y === 'number' ? rect.top + offset.y : rect.top + rect.height / 2;
+
+        // Drag destination: absolute viewport {x,y} or relative {dx,dy}.
+        let dest: { x: number; y: number } | undefined;
+        if (to && typeof to === 'object') {
+            if (typeof to.dx === 'number' || typeof to.dy === 'number') {
+                dest = { x: originX + (to.dx ?? 0), y: originY + (to.dy ?? 0) };
+            } else if (typeof to.x === 'number' && typeof to.y === 'number') {
+                dest = { x: to.x, y: to.y };
+            }
+        }
+
+        const dispatched = dispatchPointerGesture(element, gesture, {
+            x: originX,
+            y: originY,
+            button: typeof button === 'number' ? button : 0,
+            modifiers: Array.isArray(modifiers) ? modifiers : [],
+            to: dest,
+            steps: typeof steps === 'number' ? steps : 8,
+        });
+
+        await emitResponse('dispatch-pointer-response', correlationId, {
+            success: true,
+            data: {
+                dispatched,
+                target: { tag: element.tagName.toLowerCase(), id: element.id || null },
+                from: { x: Math.round(originX), y: Math.round(originY) },
+                to: dest ? { x: Math.round(dest.x), y: Math.round(dest.y) } : undefined,
+            },
+        });
+    } catch (error) {
+        console.error('TAURI-PLUGIN-MCP: Error handling dispatch-pointer request', error);
+        await emitResponse('dispatch-pointer-response', correlationId, {
+            success: false,
+            error: error instanceof Error ? error.toString() : String(error),
+        }).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
+    }
+}
+
+// ---- app_bridge: app-registered helper registry ----
+// The host app calls window.__MCP_BRIDGE__.register(name, fn, description)
+// to expose app-level helpers (store snapshots, feature actions) to agents
+// without them hand-writing execute_js against app internals.
+
+interface McpBridge {
+    __isMcpBridge: true;
+    register(name: string, fn: (...args: any[]) => any, description?: string): void;
+    unregister(name: string): void;
+    list(): Array<{ name: string; description: string }>;
+    call(name: string, args?: any[]): Promise<any>;
+}
+
+function ensureMcpBridge(): McpBridge {
+    const w = window as any;
+    if (w.__MCP_BRIDGE__ && w.__MCP_BRIDGE__.__isMcpBridge) {
+        return w.__MCP_BRIDGE__ as McpBridge;
+    }
+    const registry = new Map<string, { fn: (...args: any[]) => any; description: string }>();
+    const bridge: McpBridge = {
+        __isMcpBridge: true,
+        // register() overwrites silently so HMR / effect re-runs are safe.
+        register(name, fn, description = '') {
+            registry.set(name, { fn, description });
+        },
+        unregister(name) {
+            registry.delete(name);
+        },
+        list() {
+            return Array.from(registry.entries()).map(([name, entry]) => ({
+                name,
+                description: entry.description,
+            }));
+        },
+        async call(name, args = []) {
+            const entry = registry.get(name);
+            if (!entry) {
+                const known = Array.from(registry.keys()).join(', ') || '(none registered)';
+                throw new Error(`No bridge helper named "${name}". Registered helpers: ${known}`);
+            }
+            return await entry.fn(...(Array.isArray(args) ? args : [args]));
+        },
+    };
+    w.__MCP_BRIDGE__ = bridge;
+    return bridge;
+}
+
+async function handleAppBridgeRequest(event: any) {
+    const correlationId = getCorrelationId(event.payload);
+    try {
+        const { action, name = null, args = null, timeoutMs = 10000, maxChars = 20000 } = event.payload;
+        const bridge = ensureMcpBridge();
+
+        if (action === 'list') {
+            await emitResponse('app-bridge-response', correlationId, {
+                success: true,
+                data: { helpers: bridge.list() },
+            });
+            return;
+        }
+
+        if (action !== 'call') {
+            throw new Error(`Unsupported app_bridge action: ${action}. Use 'list' or 'call'.`);
+        }
+        if (!name) throw new Error("app_bridge action 'call' requires a helper name");
+
+        const callArgs = args == null ? [] : (Array.isArray(args) ? args : [args]);
+        const result = await Promise.race([
+            bridge.call(name, callArgs),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(`Bridge helper "${name}" timed out after ${timeoutMs}ms`)), timeoutMs)
+            ),
+        ]);
+
+        let serialized = stringifyJsResult(result);
+        let truncated = false;
+        if (serialized.length > maxChars) {
+            serialized = serialized.slice(0, maxChars) + `…[truncated ${serialized.length - maxChars} chars — pass a narrower helper/args or raise max_chars]`;
+            truncated = true;
+        }
+
+        await emitResponse('app-bridge-response', correlationId, {
+            success: true,
+            data: { result: serialized, type: typeof result, truncated },
+        });
+    } catch (error) {
+        console.error('TAURI-PLUGIN-MCP: Error handling app-bridge request', error);
+        await emitResponse('app-bridge-response', correlationId, {
+            success: false,
+            error: error instanceof Error ? error.toString() : String(error),
+        }).catch(e => console.error('TAURI-PLUGIN-MCP: Error emitting error response', e));
     }
 }
 

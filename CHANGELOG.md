@@ -4,7 +4,44 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-07-16
+
+Driven by transcript mining of real agent sessions: 80% of all tool calls
+were `execute_js`, and most of those were hand-rolled variants of four
+patterns. These are now first-class tools.
+
+### Added
+
+- **`read_text` tool** — structured text scraping: per-element
+  `{tag, text, visible, attrs?}` for a CSS selector, whitespace-collapsed,
+  hard-capped output with a `truncated` flag, optional `scope_selector`.
+  Replaces `querySelectorAll(...).map(el => el.textContent)` execute_js snippets.
+- **`inspect_element` tool** — bounding rect, computed styles (default
+  layout/color set or explicit `style_props`), classList and attributes for
+  visual/layout QA. Replaces `getComputedStyle`/`getBoundingClientRect` snippets.
+- **`dispatch_pointer` tool** — synthetic pointer/mouse gesture chains
+  (`click`, `dblclick`, `down`, `up`, `hover`, `drag`) dispatched on the
+  exact matched element with no interactive-ancestor retargeting. Supports
+  element-relative `offset` (canvas hit-testing), absolute or relative drag
+  destinations, interpolated drag moves double-dispatched on the element and
+  `document` (d3-drag compatible; synthetic events bypass `setPointerCapture`),
+  buttons and modifier keys.
+- **`app_bridge` tool + `window.__MCP_BRIDGE__` registry** — host apps
+  register named (optionally async) helpers via
+  `__MCP_BRIDGE__.register(name, fn, description)`; agents discover them with
+  `action='list'` and invoke with `action='call'`. Results are serialized and
+  truncated at `max_chars`. The sanctioned path for store snapshots and
+  app-level actions instead of execute_js against app internals.
+- **`click` / `query_page(find_element)` sharpening** — new optional
+  `scope_selector`, `match` (`exact`|`contains`), and `nth` parameters for
+  disambiguating repeated text/selectors within a container.
+
+### Changed
+
+- `find_element` text matching collects all candidates, prefers innermost
+  matches hoisted to their nearest interactive matching ancestor, and ranks
+  interactive > semantic > shortest text — it no longer returns a huge
+  container div whose `textContent` happens to include the target string.
 
 ### Fixed
 

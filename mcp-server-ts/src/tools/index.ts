@@ -14,6 +14,10 @@ import { registerRestartAppTool } from "./restart_app.js";
 import { registerQueryLogsTool } from "./query_logs.js";
 import { registerLogMarkTool } from "./log_mark.js";
 import { registerManageIpcTool } from "./manage_ipc.js";
+import { registerReadTextTool } from "./read_text.js";
+import { registerInspectElementTool } from "./inspect_element.js";
+import { registerDispatchPointerTool } from "./dispatch_pointer.js";
+import { registerAppBridgeTool } from "./app_bridge.js";
 import { socketClient } from "./client.js";
 
 // Re-export the socket client for direct use
@@ -36,6 +40,10 @@ export function registerAllTools(server: McpServer) {
   registerQueryLogsTool(server);
   registerLogMarkTool(server);
   registerManageIpcTool(server);
+  registerReadTextTool(server);
+  registerInspectElementTool(server);
+  registerDispatchPointerTool(server);
+  registerAppBridgeTool(server);
 }
 
 // Function to initialize socket connection (can be awaited before registering tools)
