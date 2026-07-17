@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-07-17
+
+### Fixed
+
+- Release pipeline: the MCP server's smoke test still expected the 15-tool
+  set and failed `prepublishOnly` for `tauri-plugin-mcp-server@0.3.0` (the
+  guest package published fine). Expectations now cover all 19 tools and the
+  new `click`/`query_page` params. No functional changes.
+
 ## [0.3.0] - 2026-07-16
 
 Driven by transcript mining of real agent sessions: 80% of all tool calls

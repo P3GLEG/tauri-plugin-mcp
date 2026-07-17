@@ -1,6 +1,6 @@
 {
   "name": "tauri-plugin-mcp-server",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server that lets AI agents interact with and debug Tauri applications via the tauri-plugin-mcp socket (screenshots, DOM access, input simulation, log querying)",
   "main": "build/index.js",
   "type": "module",

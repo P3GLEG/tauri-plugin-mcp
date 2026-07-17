@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-mcp"
-version = "0.3.0"
+version = "0.3.1"
 authors = [ "Pegleg" ]
 description = "A Tauri plugin that enables AI agents to interact with GUIs through screenshots, DOM access, and input simulation utilizing MCP"
 edition = "2024"

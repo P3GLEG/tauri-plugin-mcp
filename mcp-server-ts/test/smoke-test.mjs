@@ -14,7 +14,7 @@ import { once } from "node:events";
 
 // ── Expectations ──────────────────────────────────────────────────────
 
-const EXPECTED_TOOL_COUNT = 15;
+const EXPECTED_TOOL_COUNT = 19;
 
 const EXPECTED_TOOLS = [
   "take_screenshot",
@@ -32,6 +32,10 @@ const EXPECTED_TOOLS = [
   "query_logs",
   "log_mark",
   "manage_ipc",
+  "read_text",
+  "inspect_element",
+  "dispatch_pointer",
+  "app_bridge",
 ];
 
 // Tools whose selector_type enum MUST include "ref"
@@ -52,6 +56,7 @@ const SCHEMA_CHECKS = {
       "scope_selector", "max_depth", "delta", "wait_for_stable",
       "quiet_ms", "max_wait_ms", "timeout_secs", "include_metadata",
       "selector_type", "selector_value", "should_click",
+      "find_scope_selector", "match", "nth",
     ],
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
   },
@@ -59,6 +64,7 @@ const SCHEMA_CHECKS = {
     params: [
       "x", "y", "button", "click_type",
       "selector_type", "selector_value", "window_label",
+      "scope_selector", "match", "nth",
     ],
     annotations: { destructiveHint: true },
   },
@@ -127,6 +133,30 @@ const SCHEMA_CHECKS = {
   },
   log_mark: {
     params: ["id", "note"],
+    annotations: { destructiveHint: false },
+  },
+  read_text: {
+    params: [
+      "selector", "all", "limit", "attrs", "max_chars",
+      "scope_selector", "window_label",
+    ],
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  },
+  inspect_element: {
+    params: ["selector", "all", "limit", "style_props", "window_label"],
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+  },
+  dispatch_pointer: {
+    params: [
+      "selector_type", "selector_value", "gesture", "offset", "to",
+      "steps", "button", "modifiers", "window_label",
+    ],
+    annotations: { destructiveHint: true },
+  },
+  app_bridge: {
+    params: [
+      "action", "name", "args", "timeout_ms", "max_chars", "window_label",
+    ],
     annotations: { destructiveHint: false },
   },
 };
