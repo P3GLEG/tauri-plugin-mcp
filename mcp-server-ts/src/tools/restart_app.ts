@@ -107,7 +107,10 @@ export function registerRestartAppTool(server: McpServer) {
           // healthy process.
           const undeliverable = gracefulMessage.includes('timed out')
             || gracefulMessage.includes('Failed to connect')
-            || gracefulMessage.includes('Failed to send request');
+            || gracefulMessage.includes('Failed to send request')
+            // The app closed the socket before answering, e.g. it restarted
+            // faster than delay_ms. No response means nothing was refused.
+            || gracefulMessage.includes('Socket connection closed');
           if (!undeliverable) {
             return createErrorResponse(`Restart refused by the app: ${gracefulMessage}`);
           }

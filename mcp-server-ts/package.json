@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', 0o755)\"",
-    "test": "node test/smoke-test.mjs",
+    "test": "node test/smoke-test.mjs && node test/reconnect-test.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "engines": {

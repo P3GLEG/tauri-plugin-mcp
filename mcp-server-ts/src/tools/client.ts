@@ -35,6 +35,7 @@ export class TauriSocketClient {
   private reconnectAttempts = 0;
   private authToken: string | undefined;
   private suppressAutoReconnect = false;
+  private connectPromise: Promise<void> | null = null;
 
   constructor(config?: ConnectionConfig) {
     // Default to IPC with default path
@@ -95,6 +96,21 @@ export class TauriSocketClient {
   async connect(): Promise<void> {
     if (this.isConnected) return;
 
+    // An auto-reconnect and an outgoing command can both call connect() while
+    // there is no connection. Share the in-flight attempt so only one socket
+    // is ever created: two sockets would leave one of them carrying both data
+    // listeners, which doubles every chunk in the shared buffer.
+    if (this.connectPromise) return this.connectPromise;
+
+    this.connectPromise = this.openConnection();
+    try {
+      await this.connectPromise;
+    } finally {
+      this.connectPromise = null;
+    }
+  }
+
+  private openConnection(): Promise<void> {
     // Re-resolve auth token on every connect attempt so that tokens
     // written after MCP startup (e.g. by a Tauri app starting later)
     // are picked up without restarting the MCP process.
@@ -120,28 +136,47 @@ export class TauriSocketClient {
 
       console.error(`Connecting to ${connectionInfo} (attempt ${this.reconnectAttempts + 1})`);
       
-      this.client = net.createConnection(connectionOptions, () => {
+      const socket = net.createConnection(connectionOptions, () => {
         this.isConnected = true;
         this.reconnectAttempts = 0;
         console.error(`Connected to Tauri socket server at ${connectionInfo}`);
-        
-        // Setup data handler
-        this.client!.on('data', (data) => {
-          this.handleData(data);
-        });
-        
         resolve();
       });
+      this.client = socket;
 
-      this.client!.on('error', (err) => {
+      // Every listener binds to the socket this call created, never to
+      // this.client, which a later connect() may have replaced.
+      socket.on('data', (data) => {
+        this.handleData(data);
+      });
+
+      socket.on('error', (err) => {
         console.error('Socket connection error:', err);
-        this.isConnected = false;
+        if (this.client === socket) {
+          this.isConnected = false;
+        }
         reject(err);
       });
-      
-      this.client!.on('close', () => {
-        this.isConnected = false;
+
+      socket.on('close', () => {
         console.error('Socket connection closed');
+        socket.removeAllListeners();
+
+        // A socket that has already been replaced must not touch shared state
+        // or start a reconnect on behalf of the live connection.
+        if (this.client !== socket) return;
+
+        this.client = null;
+        this.isConnected = false;
+        // Drop any partial response: the rest of it is never arriving.
+        this.buffer = '';
+
+        // Nothing can answer a request that was in flight on this socket, so
+        // fail it now rather than leaving the caller to hit its own timeout.
+        for (const [id, callback] of this.responseCallbacks.entries()) {
+          this.responseCallbacks.delete(id);
+          callback.reject(new Error('Socket connection closed before a response arrived'));
+        }
 
         // Skip auto-reconnect if a managed reconnection (e.g. restart) is in progress
         if (this.suppressAutoReconnect) {
@@ -331,6 +366,9 @@ export class TauriSocketClient {
     }
     this.isConnected = false;
     this.buffer = '';
+    // The torn-down socket can no longer settle an in-flight connect attempt,
+    // so drop it and let the poll below start a fresh one.
+    this.connectPromise = null;
 
     // Poll for reconnection
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
