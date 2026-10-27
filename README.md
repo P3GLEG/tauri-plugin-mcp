@@ -25,6 +25,25 @@ npx tauri-plugin-mcp-server
 tauri-plugin-mcp = { git = "https://github.com/P3GLEG/tauri-plugin-mcp" }
 ```
 
+#### Cargo features
+
+The plugin depends on [`image`](https://crates.io/crates/image) with its default features off and
+only JPEG enabled, which is all the screenshot tools need. That keeps codecs such as AVIF (`rav1e`),
+EXR and TIFF out of your build. If your app uses `image` itself and needs more formats, enable them
+here or on your own `image` dependency:
+
+| Feature | Default | Enables |
+|---|---|---|
+| `image-png` | yes | `image/png`; on because earlier versions named it, though the plugin doesn't need it |
+| `image-bmp`, `image-gif`, `image-webp`, `image-tiff`, `image-avif` | no | the `image` format of the same name |
+| `image-default-formats` | no | `image/default-formats`, every format earlier versions enabled |
+| `image-rayon` | no | `image/rayon` |
+| `devtools` | no | `tauri/devtools` |
+
+```toml
+tauri-plugin-mcp = { git = "https://github.com/P3GLEG/tauri-plugin-mcp", features = ["image-webp"] }
+```
+
 ## Tools
 
 The MCP server exposes 19 high-level tools to AI agents:

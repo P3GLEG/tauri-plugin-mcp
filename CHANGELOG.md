@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Cargo features that forward to `image`: `image-png` (on by default),
+  `image-bmp`, `image-gif`, `image-webp`, `image-tiff`, `image-avif`,
+  `image-default-formats` (every format the plugin used to enable) and
+  `image-rayon`.
+
+### Changed
+
+- The `image` dependency now has its default features off and enables only
+  JPEG, the one format the plugin encodes, plus PNG through the default
+  `image-png` feature. Builds no longer compile every `image` codec (AVIF via
+  `rav1e`, EXR, TIFF, WebP, GIF and the rest). Behavior of every tool is
+  unchanged. Apps that use `image` themselves and relied on this plugin to
+  enable other formats must now enable them, with `image-default-formats`,
+  a single format feature, or on their own `image` dependency.
+
 ## [0.3.1] - 2026-07-17
 
 ### Fixed

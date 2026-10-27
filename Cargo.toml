@@ -10,7 +10,8 @@ links = "tauri-plugin-mcp"
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
-image = { version = "0.25", features = ["jpeg", "png"] }
+# Only JPEG is needed by the plugin itself (screenshot encoding); other formats are opt-in features.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 interprocess = { version = "2.2.3", features = ["tokio"] }
 log = { version = "0.4", features = ["std"] }
 parking_lot = "0.12"
@@ -35,8 +36,21 @@ xcap = "0.9"
 win-screenshot = "4.0.5"
 
 [features]
-default = []
+default = ["image-png"]
 devtools = ["tauri/devtools"]
+# Image formats, forwarded to the `image` crate. The plugin only needs JPEG, which is always on;
+# these are for apps that use `image` themselves and relied on the formats the plugin used to enable.
+# PNG stays on by default because earlier versions named it explicitly; the plugin doesn't need it.
+image-png = ["image/png"]
+image-bmp = ["image/bmp"]
+image-gif = ["image/gif"]
+image-webp = ["image/webp"]
+image-tiff = ["image/tiff"]
+image-avif = ["image/avif"]
+# Every format `image` enables by default, as earlier versions did.
+image-default-formats = ["image/default-formats"]
+# Parallel pixel iterators, and threading for the AVIF and EXR codecs; on by default in image.
+image-rayon = ["image/rayon"]
 
 [build-dependencies]
 tauri-plugin = { version = "2.5", features = ["build"] }
